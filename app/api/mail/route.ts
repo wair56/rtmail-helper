@@ -26,7 +26,7 @@ export async function POST(req: Request) {
       });
       const tokenData = await tokenRes.json();
       if (!tokenRes.ok || !tokenData.access_token) {
-        return new Response(JSON.stringify({ error: 'Failed to obtain access token from Microsoft', details: tokenData }), { status: 401 });
+        return new Response(JSON.stringify({ error: '从客户端获取/刷新令牌失败 (Failed to obtain access token from Microsoft)', details: tokenData }), { status: 401 });
       }
 
       const mailRes = await fetch('https://graph.microsoft.com/v1.0/me/messages?$top=20&$select=sender,subject,bodyPreview,receivedDateTime,body', {
@@ -34,15 +34,15 @@ export async function POST(req: Request) {
       });
       const mailData = await mailRes.json();
       if (!mailRes.ok) {
-        return new Response(JSON.stringify({ error: 'Failed to fetch emails via Graph API', details: mailData }), { status: 500 });
+        return new Response(JSON.stringify({ error: '调用 Graph API 获取邮件失败 (Failed to fetch emails via Graph API)', details: mailData }), { status: 500 });
       }
 
       const formattedMails = (mailData.value || []).map((m: any) => ({
         id: m.id,
-        subject: m.subject || '(No Subject)',
+        subject: m.subject || '(无主题 / No Subject)',
         senderName: m.sender?.emailAddress?.name || '',
         senderEmail: m.sender?.emailAddress?.address || '',
-        preview: m.bodyPreview || 'No preview available.',
+        preview: m.bodyPreview || '暂无预览内容 (No preview available.)',
         date: m.receivedDateTime
       }));
 
@@ -67,7 +67,7 @@ export async function POST(req: Request) {
       });
       const tokenData = await tokenRes.json();
       if (!tokenRes.ok || !tokenData.access_token) {
-        return new Response(JSON.stringify({ error: 'Failed to obtain access token from Google', details: tokenData }), { status: 401 });
+        return new Response(JSON.stringify({ error: '从谷歌获取/刷新令牌失败 (Failed to obtain access token from Google)', details: tokenData }), { status: 401 });
       }
 
       const listRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10', {
@@ -75,7 +75,7 @@ export async function POST(req: Request) {
       });
       const listData = await listRes.json();
       if (!listRes.ok) {
-        return new Response(JSON.stringify({ error: 'Failed to list Gmail messages', details: listData }), { status: 500 });
+        return new Response(JSON.stringify({ error: '获取 Gmail 邮件列表失败 (Failed to list Gmail messages)', details: listData }), { status: 500 });
       }
 
       const messages = listData.messages || [];
@@ -89,7 +89,7 @@ export async function POST(req: Request) {
         const detailData = await detailRes.json();
         if (detailRes.ok) {
           const headers = detailData.payload?.headers || [];
-          const subject = headers.find((h: any) => h.name.toLowerCase() === 'subject')?.value || '(No Subject)';
+          const subject = headers.find((h: any) => h.name.toLowerCase() === 'subject')?.value || '(无主题 / No Subject)';
           const from = headers.find((h: any) => h.name.toLowerCase() === 'from')?.value || '';
           const date = headers.find((h: any) => h.name.toLowerCase() === 'date')?.value || '';
           
@@ -106,7 +106,7 @@ export async function POST(req: Request) {
             subject,
             senderName,
             senderEmail,
-            preview: detailData.snippet || 'No preview available.',
+            preview: detailData.snippet || '暂无预览内容 (No preview available.)',
             date: new Date(date).toISOString()
           });
         }
@@ -115,7 +115,7 @@ export async function POST(req: Request) {
       return new Response(JSON.stringify({ success: true, data: formattedMails }), { status: 200 });
 
     } else {
-      return new Response(JSON.stringify({ error: 'Unsupported provider' }), { status: 400 });
+      return new Response(JSON.stringify({ error: '不支持的服务商 (Unsupported provider)' }), { status: 400 });
     }
 
   } catch (error: any) {
