@@ -16,12 +16,11 @@ export default function Home() {
       const parts = val.split('----').map(p => p.trim());
       if (parts.length >= 2) {
         setEmail(parts[0]);
-        // Usually, the RT is the last part
+        // 通常最后一个元素是 RT
         setRefreshToken(parts[parts.length - 1]);
         return;
       }
     }
-    // If not a combo string, just set the value normally based on context
   };
 
   const [loading, setLoading] = useState(false);
@@ -50,11 +49,11 @@ export default function Home() {
       const json = await res.json();
 
       if (!res.ok) {
-        let errorMsg = json.error || 'Failed to fetch emails.';
+        let errorMsg = json.error || '获取邮件失败 (Failed to fetch emails)。';
         if (json.details && json.details.error_description) {
-          errorMsg += `\nDetailed Error: ${json.details.error_description}`;
+          errorMsg += `\n详细报错 (Error): ${json.details.error_description}`;
         } else if (json.details) {
-          errorMsg += `\nDetails: ${JSON.stringify(json.details)}`;
+          errorMsg += `\n报错详情 (Details): ${JSON.stringify(json.details)}`;
         }
         throw new Error(errorMsg);
       }
@@ -71,16 +70,16 @@ export default function Home() {
     <main style={{ padding: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh' }}>
       <div className="glass-panel animate-fade-in" style={{ width: '100%', maxWidth: '600px', padding: '2rem', marginBottom: '2rem' }}>
         <h1 className="title">RT Mail Fetcher</h1>
-        <p className="subtitle">Securely access your latest emails via Refresh Token</p>
+        <p className="subtitle">通过 Refresh Token 安全且极速地读取您的最新邮件</p>
         
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
           
           <div className="input-group" style={{ marginBottom: '1rem' }}>
-            <label className="input-label" htmlFor="smart_paste" style={{ color: 'var(--success)' }}>⚡ Smart Auto-Fill (Optional)</label>
+            <label className="input-label" htmlFor="smart_paste" style={{ color: 'var(--success)' }}>⚡ 一键智能识别 (Smart Auto-Fill)</label>
             <input 
               id="smart_paste"
               className="input-field" 
-              placeholder="Paste combo here: email----pwd----recover----rt" 
+              placeholder="复制整段文本 (例如: 邮箱----密码----辅助箱----RT) 粘贴至此..." 
               onChange={(e) => handleSmartPaste(e.target.value)}
               style={{ borderColor: 'rgba(16, 185, 129, 0.5)' }}
             />
@@ -116,12 +115,12 @@ export default function Home() {
           </div>
 
           <div className="input-group">
-            <label className="input-label" htmlFor="email">Email Address</label>
+            <label className="input-label" htmlFor="email">邮箱地址 (Email Address)</label>
             <input 
               id="email"
               type="email" 
               className="input-field" 
-              placeholder={provider === 'microsoft' ? "e.g. your_email@hotmail.com" : "e.g. your_email@gmail.com"} 
+              placeholder={provider === 'microsoft' ? "例如: your_email@hotmail.com" : "例如: your_email@gmail.com"} 
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
@@ -129,11 +128,11 @@ export default function Home() {
           </div>
           
           <div className="input-group">
-            <label className="input-label" htmlFor="rt">Refresh Token</label>
+            <label className="input-label" htmlFor="rt">刷新令牌 (Refresh Token)</label>
             <textarea 
               id="rt"
               className="input-field" 
-              placeholder="Paste your long refresh token here..." 
+              placeholder="在此输入您的 Refresh Token..." 
               rows={4}
               value={refreshToken}
               onChange={(e) => setRefreshToken(e.target.value)}
@@ -147,33 +146,33 @@ export default function Home() {
               style={{ display: 'flex', justifyContent: 'space-between', cursor: 'pointer', color: '#cbd5e1', fontSize: '0.9rem', fontWeight: 500 }}
               onClick={() => setShowAdvanced(!showAdvanced)}
             >
-              <span>⚙️ Advanced Settings (OAuth Credentials)</span>
+              <span>⚙️ 高级凭据设置 (Oauth Credentials)</span>
               <span>{showAdvanced ? '▴' : '▾'}</span>
             </div>
             
             {showAdvanced && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem', animation: 'fadeIn 0.3s ease forwards' }}>
                 <p style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
-                  If left blank, the system will use a built-in generic Client ID. Providing your own is recommended for stability.
+                  如果您留空，系统将自动使用内置的灰产通用 Client ID 发起提取。如果您有特定的 Oauth 应用也可以在此覆写。
                 </p>
                 <div className="input-group" style={{ marginBottom: 0 }}>
-                  <label className="input-label" htmlFor="client_id">Custom Client ID</label>
+                  <label className="input-label" htmlFor="client_id">自定义 Client ID</label>
                   <input 
                     id="client_id"
                     type="text" 
                     className="input-field" 
-                    placeholder="Optional" 
+                    placeholder="选填 (Optional)" 
                     value={customClientId}
                     onChange={(e) => setCustomClientId(e.target.value)}
                   />
                 </div>
                 <div className="input-group" style={{ marginBottom: 0 }}>
-                  <label className="input-label" htmlFor="client_secret">Custom Client Secret</label>
+                  <label className="input-label" htmlFor="client_secret">自定义 Client Secret</label>
                   <input 
                     id="client_secret"
                     type="password" 
                     className="input-field" 
-                    placeholder="Optional" 
+                    placeholder="选填 (Optional)" 
                     value={customClientSecret}
                     onChange={(e) => setCustomClientSecret(e.target.value)}
                   />
@@ -184,14 +183,14 @@ export default function Home() {
           
           <button type="submit" className="btn" disabled={loading} style={{ background: provider === 'google' ? 'var(--success)' : 'var(--accent)' }}>
             {loading ? (
-              <><span className="spinner"></span> Fetching Emails...</>
+              <><span className="spinner"></span> 正在为您拉取... (Fetching)</>
             ) : (
-              'Fetch Emails'
+              '获取最新邮件 (Fetch Emails)'
             )}
           </button>
           
           {error && (
-            <div style={{ color: 'var(--error)', background: 'rgba(239, 68, 68, 0.1)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(239, 68, 68, 0.2)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
+            <div style={{ color: 'var(--error)', background: 'rgba(239, 68, 68, 0.1)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(239, 68, 68, 0.2)', fontSize: '0.9rem', marginTop: '0.5rem', whiteSpace: 'pre-wrap' }}>
               ⚠️ {error}
             </div>
           )}
@@ -200,7 +199,7 @@ export default function Home() {
 
       {emails.length > 0 && (
         <div style={{ width: '100%', maxWidth: '800px', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <h2 style={{ fontSize: '1.5rem', fontWeight: 600, color: '#fff', marginBottom: '1rem', paddingLeft: '0.5rem' }}>Latest Emails ({emails.length})</h2>
+          <h2 style={{ fontSize: '1.5rem', fontWeight: 600, color: '#fff', marginBottom: '1rem', paddingLeft: '0.5rem' }}>最新收件箱 (Latest Emails): {emails.length} 封</h2>
           
           {emails.map((mail, idx) => (
             <div key={mail.id} className="glass-panel animate-fade-in" style={{ padding: '1.5rem', animationDelay: `${idx * 0.05}s` }}>
