@@ -11,6 +11,19 @@ export default function Home() {
   const [customClientSecret, setCustomClientSecret] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   
+  const handleSmartPaste = (val: string) => {
+    if (val.includes('----')) {
+      const parts = val.split('----').map(p => p.trim());
+      if (parts.length >= 2) {
+        setEmail(parts[0]);
+        // Usually, the RT is the last part
+        setRefreshToken(parts[parts.length - 1]);
+        return;
+      }
+    }
+    // If not a combo string, just set the value normally based on context
+  };
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [emails, setEmails] = useState<any[]>([]);
@@ -37,7 +50,13 @@ export default function Home() {
       const json = await res.json();
 
       if (!res.ok) {
-        throw new Error(json.error || 'Failed to fetch emails. Check your RT or credentials.');
+        let errorMsg = json.error || 'Failed to fetch emails.';
+        if (json.details && json.details.error_description) {
+          errorMsg += `\nDetailed Error: ${json.details.error_description}`;
+        } else if (json.details) {
+          errorMsg += `\nDetails: ${JSON.stringify(json.details)}`;
+        }
+        throw new Error(errorMsg);
       }
 
       setEmails(json.data);
@@ -56,6 +75,17 @@ export default function Home() {
         
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
           
+          <div className="input-group" style={{ marginBottom: '1rem' }}>
+            <label className="input-label" htmlFor="smart_paste" style={{ color: 'var(--success)' }}>⚡ Smart Auto-Fill (Optional)</label>
+            <input 
+              id="smart_paste"
+              className="input-field" 
+              placeholder="Paste combo here: email----pwd----recover----rt" 
+              onChange={(e) => handleSmartPaste(e.target.value)}
+              style={{ borderColor: 'rgba(16, 185, 129, 0.5)' }}
+            />
+          </div>
+
           <div className="provider-selector" style={{ display: 'flex', gap: '1rem', marginBottom: '0.5rem' }}>
             <button 
               type="button"
@@ -68,7 +98,7 @@ export default function Home() {
                 transition: 'all 0.2s', fontWeight: 600
               }}
             >
-              Microsoft / Outlook
+              Microsoft / Outlook / Hotmail
             </button>
             <button 
               type="button"
