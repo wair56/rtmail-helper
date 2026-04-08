@@ -63,7 +63,7 @@ export default function Home() {
               style={{
                 flex: 1, padding: '0.75rem', borderRadius: '8px', cursor: 'pointer',
                 background: provider === 'microsoft' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(0,0,0,0.2)',
-                border: \`1px solid \${provider === 'microsoft' ? 'var(--accent)' : 'var(--border)'}\`,
+                border: `1px solid ${provider === 'microsoft' ? 'var(--accent)' : 'var(--border)'}`,
                 color: provider === 'microsoft' ? '#fff' : '#94a3b8',
                 transition: 'all 0.2s', fontWeight: 600
               }}
@@ -76,7 +76,7 @@ export default function Home() {
               style={{
                 flex: 1, padding: '0.75rem', borderRadius: '8px', cursor: 'pointer',
                 background: provider === 'google' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(0,0,0,0.2)',
-                border: \`1px solid \${provider === 'google' ? 'var(--success)' : 'var(--border)'}\`,
+                border: `1px solid ${provider === 'google' ? 'var(--success)' : 'var(--border)'}`,
                 color: provider === 'google' ? '#fff' : '#94a3b8',
                 transition: 'all 0.2s', fontWeight: 600
               }}
@@ -173,12 +173,12 @@ export default function Home() {
           <h2 style={{ fontSize: '1.5rem', fontWeight: 600, color: '#fff', marginBottom: '1rem', paddingLeft: '0.5rem' }}>Latest Emails ({emails.length})</h2>
           
           {emails.map((mail, idx) => (
-            <div key={mail.id} className="glass-panel animate-fade-in" style={{ padding: '1.5rem', animationDelay: \`\${idx * 0.05}s\` }}>
+            <div key={mail.id} className="glass-panel animate-fade-in" style={{ padding: '1.5rem', animationDelay: `${idx * 0.05}s` }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem', gap: '1rem' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                   <div style={{ fontWeight: 600, color: '#f8fafc', fontSize: '1.1rem' }}>{mail.subject}</div>
                   <div style={{ color: provider === 'google' ? 'var(--success)' : 'var(--accent)', fontSize: '0.9rem' }}>
-                    {mail.senderName ? \`\${mail.senderName} <\${mail.senderEmail}>\` : mail.senderEmail}
+                    {mail.senderName ? `${mail.senderName} (${mail.senderEmail})` : mail.senderEmail}
                   </div>
                 </div>
                 <div style={{ color: '#94a3b8', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
