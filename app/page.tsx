@@ -6,18 +6,21 @@ import './globals.css';
 export default function Home() {
   const [provider, setProvider] = useState('microsoft');
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [refreshToken, setRefreshToken] = useState('');
   const [customClientId, setCustomClientId] = useState('');
   const [customClientSecret, setCustomClientSecret] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [authMode, setAuthMode] = useState<'auto' | 'password' | 'rt'>('auto');
   
   const handleSmartPaste = (val: string) => {
     if (val.includes('----')) {
       const parts = val.split('----').map(p => p.trim());
       if (parts.length >= 2) {
         setEmail(parts[0]);
-        // 通常最后一个元素是 RT
-        setRefreshToken(parts[parts.length - 1]);
+        // 格式: 邮箱----GPT密码----邮箱密码----RT
+        if (parts.length >= 3) setPassword(parts[2]); // 第三段是邮箱密码
+        if (parts.length >= 4) setRefreshToken(parts[3]); // 第四段是RT(ChatGPT的)
         return;
       }
     }
@@ -40,7 +43,9 @@ export default function Home() {
         body: JSON.stringify({ 
           provider, 
           email, 
+          password: password.trim() || undefined,
           refreshToken, 
+          authMode,
           customClientId: customClientId.trim() || undefined, 
           customClientSecret: customClientSecret.trim() || undefined 
         }),
@@ -69,7 +74,7 @@ export default function Home() {
     <main style={{ padding: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh' }}>
       <div className="glass-panel animate-fade-in" style={{ width: '100%', maxWidth: '600px', padding: '2rem', marginBottom: '2rem' }}>
         <h1 className="title">RT Mail Fetcher</h1>
-        <p className="subtitle">通过 Refresh Token 安全且极速地读取您的最新邮件</p>
+        <p className="subtitle">通过 Refresh Token 或密码安全且极速地读取您的最新邮件</p>
         
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
           
@@ -78,10 +83,34 @@ export default function Home() {
             <input 
               id="smart_paste"
               className="input-field" 
-              placeholder="复制整段文本 (例如: 邮箱----密码----辅助箱----RT) 粘贴至此..." 
+              placeholder="粘贴组合串: 邮箱----密码----辅助箱----RT" 
               onChange={(e) => handleSmartPaste(e.target.value)}
               style={{ borderColor: 'rgba(16, 185, 129, 0.5)' }}
             />
+          </div>
+
+          {/* 认证模式选择 */}
+          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.25rem' }}>
+            {[
+              { key: 'auto', label: '🔄 自动 (Auto)' },
+              { key: 'password', label: '🔑 密码登录' },
+              { key: 'rt', label: '🎫 Refresh Token' },
+            ].map(mode => (
+              <button
+                key={mode.key}
+                type="button"
+                onClick={() => setAuthMode(mode.key as any)}
+                style={{
+                  flex: 1, padding: '0.5rem', borderRadius: '6px', cursor: 'pointer',
+                  background: authMode === mode.key ? 'rgba(139, 92, 246, 0.2)' : 'rgba(0,0,0,0.2)',
+                  border: `1px solid ${authMode === mode.key ? 'rgb(139, 92, 246)' : 'var(--border)'}`,
+                  color: authMode === mode.key ? '#fff' : '#94a3b8',
+                  transition: 'all 0.2s', fontWeight: 500, fontSize: '0.8rem'
+                }}
+              >
+                {mode.label}
+              </button>
+            ))}
           </div>
 
           <div className="provider-selector" style={{ display: 'flex', gap: '1rem', marginBottom: '0.5rem' }}>
@@ -125,34 +154,49 @@ export default function Home() {
               required
             />
           </div>
+
+          {(authMode === 'password' || authMode === 'auto') && (
+            <div className="input-group">
+              <label className="input-label" htmlFor="pwd">密码 (Password)</label>
+              <input 
+                id="pwd"
+                type="password" 
+                className="input-field" 
+                placeholder="邮箱密码（密码登录模式时使用）" 
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+          )}
           
-          <div className="input-group">
-            <label className="input-label" htmlFor="rt">刷新令牌 (Refresh Token)</label>
-            <textarea 
-              id="rt"
-              className="input-field" 
-              placeholder="在此输入您的 Refresh Token..." 
-              rows={4}
-              value={refreshToken}
-              onChange={(e) => setRefreshToken(e.target.value)}
-              required
-              style={{ resize: 'vertical' }}
-            />
-          </div>
+          {(authMode === 'rt' || authMode === 'auto') && (
+            <div className="input-group">
+              <label className="input-label" htmlFor="rt">刷新令牌 (Refresh Token)</label>
+              <textarea 
+                id="rt"
+                className="input-field" 
+                placeholder="在此输入您的 Refresh Token..." 
+                rows={3}
+                value={refreshToken}
+                onChange={(e) => setRefreshToken(e.target.value)}
+                style={{ resize: 'vertical' }}
+              />
+            </div>
+          )}
 
           <div style={{ background: 'rgba(255,255,255,0.02)', padding: '1rem', borderRadius: '8px', border: '1px solid var(--border)' }}>
             <div 
               style={{ display: 'flex', justifyContent: 'space-between', cursor: 'pointer', color: '#cbd5e1', fontSize: '0.9rem', fontWeight: 500 }}
               onClick={() => setShowAdvanced(!showAdvanced)}
             >
-              <span>⚙️ 高级凭据设置 (Oauth Credentials)</span>
+              <span>⚙️ 高级凭据设置 (OAuth Credentials)</span>
               <span>{showAdvanced ? '▴' : '▾'}</span>
             </div>
             
             {showAdvanced && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem', animation: 'fadeIn 0.3s ease forwards' }}>
                 <p style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
-                  如果您留空，系统将自动使用内置的灰产通用 Client ID 发起提取。如果您有特定的 Oauth 应用也可以在此覆写。
+                  如果您留空，系统将自动使用内置的通用 Client ID 发起提取。如果您有特定的 OAuth 应用也可以在此覆写。
                 </p>
                 <div className="input-group" style={{ marginBottom: 0 }}>
                   <label className="input-label" htmlFor="client_id">自定义 Client ID</label>
@@ -189,7 +233,7 @@ export default function Home() {
           </button>
           
           {error && (
-            <div style={{ color: 'var(--error)', background: 'rgba(239, 68, 68, 0.1)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(239, 68, 68, 0.2)', fontSize: '0.9rem', marginTop: '0.5rem', whiteSpace: 'pre-wrap' }}>
+            <div style={{ color: 'var(--error)', background: 'rgba(239, 68, 68, 0.1)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(239, 68, 68, 0.2)', fontSize: '0.9rem', marginTop: '0.5rem', whiteSpace: 'pre-wrap', maxHeight: '300px', overflow: 'auto' }}>
               ⚠️ {error}
             </div>
           )}
