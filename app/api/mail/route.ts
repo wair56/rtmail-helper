@@ -8,11 +8,17 @@ export async function POST(req: Request) {
       });
     }
 
+    // 自动清理第三方系统添加的前缀标记 (Strip third-party prefixes)
+    let cleanToken = refreshToken.trim();
+    if (cleanToken.startsWith('rt_')) {
+      cleanToken = cleanToken.substring(3);
+    }
+
     if (provider === 'microsoft') {
       const clientId = customClientId || 'dbc8e03a-b00c-46bd-ae65-b683e7707cb0';
       const tokenParams = new URLSearchParams({
         client_id: clientId,
-        refresh_token: refreshToken,
+        refresh_token: cleanToken,
         grant_type: 'refresh_token',
         scope: 'https://graph.microsoft.com/.default offline_access',
       });
@@ -54,7 +60,7 @@ export async function POST(req: Request) {
       const clientId = customClientId || '228293309116.apps.googleusercontent.com';
       const tokenParams = new URLSearchParams({
         client_id: clientId,
-        refresh_token: refreshToken,
+        refresh_token: cleanToken,
         grant_type: 'refresh_token',
       });
       if (customClientSecret) {
