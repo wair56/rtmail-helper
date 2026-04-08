@@ -14,6 +14,7 @@ export async function POST(req: Request) {
         client_id: clientId,
         refresh_token: refreshToken,
         grant_type: 'refresh_token',
+        scope: 'https://graph.microsoft.com/.default offline_access',
       });
       if (customClientSecret) tokenParams.append('client_secret', customClientSecret);
 
