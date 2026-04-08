@@ -52,9 +52,8 @@ export default function Home() {
         let errorMsg = json.error || '获取邮件失败 (Failed to fetch emails)。';
         if (json.details && json.details.error_description) {
           errorMsg += `\n详细报错 (Error): ${json.details.error_description}`;
-        } else if (json.details) {
-          errorMsg += `\n报错详情 (Details): ${JSON.stringify(json.details)}`;
         }
+        errorMsg += `\n\n--- 原始返回 (Raw Payload) ---\n${JSON.stringify(json, null, 2)}`;
         throw new Error(errorMsg);
       }
 
