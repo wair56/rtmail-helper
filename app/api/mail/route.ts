@@ -9,7 +9,7 @@ export async function POST(req: Request) {
     }
 
     if (provider === 'microsoft') {
-      const clientId = customClientId || 'd3590ed6-52b3-4102-aeff-aad2292ab01c';
+      const clientId = customClientId || 'dbc8e03a-b00c-46bd-ae65-b683e7707cb0';
       const tokenParams = new URLSearchParams({
         client_id: clientId,
         refresh_token: refreshToken,
