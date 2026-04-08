@@ -9,6 +9,8 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "imapflow": "^1.2.18",
+    "mailparser": "^3.9.6",
     "next": "16.2.2",
     "react": "19.2.4",
     "react-dom": "19.2.4"
