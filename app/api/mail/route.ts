@@ -98,18 +98,18 @@ export async function POST(req: Request) {
       }
     }
 
-    // ===== RT 模式: 通过 OAuth API =====
+    // ===== RT 模式: 通过 OAuth API / IMAP XOAUTH2 =====
     if (provider === 'microsoft') {
       const clientId = customClientId || 'dbc8e03a-b00c-46bd-ae65-b683e7707cb0';
       const tokenParams = new URLSearchParams({
         client_id: clientId,
         refresh_token: cleanToken,
         grant_type: 'refresh_token',
-        scope: 'https://graph.microsoft.com/.default offline_access',
       });
       if (customClientSecret) tokenParams.append('client_secret', customClientSecret);
 
-      const tokenRes = await fetch('https://login.microsoftonline.com/consumers/oauth2/v2.0/token', {
+      // 使用 login.live.com 来兼容所有早期 OAuth2 或不带作用域的令牌提取
+      const tokenRes = await fetch('https://login.live.com/oauth20_token.srf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: tokenParams.toString(),
@@ -119,24 +119,52 @@ export async function POST(req: Request) {
         return new Response(JSON.stringify({ error: '通过 RT 刷新令牌失败 (Failed via RT)', details: tokenData }), { status: 401 });
       }
 
-      const mailRes = await fetch('https://graph.microsoft.com/v1.0/me/messages?$top=20&$select=sender,subject,bodyPreview,receivedDateTime', {
-        headers: { 'Authorization': `Bearer ${tokenData.access_token}` },
+      // 以 IMAP XOAUTH2 模式拉取邮件，避开 Graph API 的风控和 Scope 限制
+      const server = getImapServer(email);
+      const client = new ImapFlow({
+        host: server.host,
+        port: server.port,
+        secure: true,
+        auth: {
+          user: email,
+          accessToken: tokenData.access_token,
+        },
+        logger: false,
       });
-      const mailData = await mailRes.json();
-      if (!mailRes.ok) {
-        return new Response(JSON.stringify({ error: '调用 Graph API 获取邮件失败', details: mailData }), { status: 500 });
+
+      try {
+        await client.connect();
+        const lock = await client.getMailboxLock('INBOX');
+        const formattedMails: any[] = [];
+        try {
+          const totalMessages = (client.mailbox as any)?.exists || 0;
+          if (totalMessages > 0) {
+            const startSeq = Math.max(1, totalMessages - 19);
+            for await (const message of client.fetch(`${startSeq}:*`, { envelope: true } as any)) {
+              const env = message.envelope;
+              formattedMails.push({
+                id: message.uid?.toString() || message.seq?.toString(),
+                subject: env?.subject || '(无主题 / No Subject)',
+                senderName: env?.from?.[0]?.name || '',
+                senderEmail: env?.from?.[0]?.address || '',
+                preview: env?.subject || '暂无预览',
+                date: env?.date?.toISOString() || new Date().toISOString(),
+              });
+            }
+          }
+        } finally {
+          lock.release();
+        }
+        await client.logout();
+        formattedMails.reverse();
+        return new Response(JSON.stringify({ success: true, data: formattedMails }), { status: 200 });
+      } catch (imapErr: any) {
+        try { await client.logout(); } catch {}
+        return new Response(JSON.stringify({ 
+          error: 'IMAP XOAUTH2 登录失败 (IMAP XOAUTH2 login failed)', 
+          details: { message: imapErr.message, code: imapErr.code }
+        }), { status: 401 });
       }
-
-      const formattedMails = (mailData.value || []).map((m: any) => ({
-        id: m.id,
-        subject: m.subject || '(无主题 / No Subject)',
-        senderName: m.sender?.emailAddress?.name || '',
-        senderEmail: m.sender?.emailAddress?.address || '',
-        preview: m.bodyPreview || '暂无预览内容',
-        date: m.receivedDateTime,
-      }));
-
-      return new Response(JSON.stringify({ success: true, data: formattedMails }), { status: 200 });
 
     } else if (provider === 'google') {
       const clientId = customClientId || '228293309116.apps.googleusercontent.com';

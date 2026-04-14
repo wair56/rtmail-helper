@@ -12,6 +12,7 @@ export default function Home() {
   const [customClientSecret, setCustomClientSecret] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [authMode, setAuthMode] = useState<'auto' | 'password' | 'rt'>('auto');
+  const [showApiGuide, setShowApiGuide] = useState(false);
   
   const handleSmartPaste = (val: string) => {
     if (val.includes('----')) {
@@ -240,6 +241,59 @@ export default function Home() {
         </form>
       </div>
 
+      <div style={{ width: '100%', maxWidth: '600px', marginBottom: '2rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <button 
+          onClick={() => setShowApiGuide(!showApiGuide)}
+          style={{ 
+            background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', 
+            color: '#cbd5e1', padding: '0.75rem', borderRadius: '8px', cursor: 'pointer',
+            display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem',
+            transition: 'all 0.2s', fontSize: '0.9rem', fontWeight: 500
+          }}
+        >
+          <span>🧑‍💻 开发者 API 调用指南 (API Guide)</span>
+          <span>{showApiGuide ? '▴' : '▾'}</span>
+        </button>
+
+        {showApiGuide && (
+          <div className="glass-panel animate-fade-in" style={{ padding: '1.5rem', fontSize: '0.85rem', color: '#cbd5e1' }}>
+            <h3 style={{ color: '#fff', marginBottom: '1rem', fontSize: '1rem' }}>POST /api/mail</h3>
+            <p style={{ marginBottom: '1rem', color: '#94a3b8' }}>您可以直接发送 POST 请求到当前域名的 <code style={{ background: 'rgba(0,0,0,0.3)', padding: '0.2rem 0.4rem', borderRadius: '4px' }}>/api/mail</code> 接口，实现完全自动化的邮件拉取。</p>
+            
+            <div style={{ marginBottom: '1rem' }}>
+              <div style={{ fontWeight: 600, color: 'var(--success)', marginBottom: '0.5rem' }}>场景 A: 使用 Refresh Token</div>
+              <pre style={{ background: 'rgba(0,0,0,0.4)', padding: '1rem', borderRadius: '8px', overflow: 'auto', border: '1px solid rgba(255,255,255,0.05)' }}>
+{`curl -X POST http://YourDomain/api/mail \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "provider": "microsoft",
+    "email": "xxx@outlook.com",
+    "refreshToken": "M.C538_BL2.0...",
+    "authMode": "rt"
+  }'`}
+              </pre>
+            </div>
+
+            <div>
+              <div style={{ fontWeight: 600, color: 'var(--accent)', marginBottom: '0.5rem' }}>场景 B: 使用 密码 (IMAP直连)</div>
+              <pre style={{ background: 'rgba(0,0,0,0.4)', padding: '1rem', borderRadius: '8px', overflow: 'auto', border: '1px solid rgba(255,255,255,0.05)' }}>
+{`curl -X POST http://YourDomain/api/mail \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "provider": "microsoft",
+    "email": "xxx@outlook.com",
+    "password": "your_password",
+    "authMode": "password"
+  }'`}
+              </pre>
+            </div>
+            
+            <div style={{ marginTop: '1rem', padding: '0.75rem', background: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.2)', borderRadius: '6px', color: '#93c5fd' }}>
+              💡 接口将返回标准的 JSON 数组包含最新的邮件主题、发件人和纯文本摘要。
+            </div>
+          </div>
+        )}
+      </div>
       {emails.length > 0 && (
         <div style={{ width: '100%', maxWidth: '800px', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <h2 style={{ fontSize: '1.5rem', fontWeight: 600, color: '#fff', marginBottom: '1rem', paddingLeft: '0.5rem' }}>最新收件箱 (Latest Emails): {emails.length} 封</h2>

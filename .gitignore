@@ -42,3 +42,11 @@ next-env.d.ts
 
 .vercel
 .env*.local
+
+# local data
+111
+test_*.py
+test_api.py
+test_jwt.py
+test_jwt_raw.py
+test_steven.py
