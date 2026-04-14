@@ -6,22 +6,20 @@ import './globals.css';
 export default function Home() {
   const [provider, setProvider] = useState('microsoft');
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [refreshToken, setRefreshToken] = useState('');
   const [customClientId, setCustomClientId] = useState('');
   const [customClientSecret, setCustomClientSecret] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [authMode, setAuthMode] = useState<'auto' | 'password' | 'rt'>('auto');
   const [showApiGuide, setShowApiGuide] = useState(false);
   
   const handleSmartPaste = (val: string) => {
     if (val.includes('----')) {
       const parts = val.split('----').map(p => p.trim());
-      if (parts.length >= 2) {
+      if (parts.length >= 4) {
         setEmail(parts[0]);
-        // 格式: 邮箱----GPT密码----邮箱密码----RT
-        if (parts.length >= 3) setPassword(parts[2]); // 第三段是邮箱密码
-        if (parts.length >= 4) setRefreshToken(parts[3]); // 第四段是RT(ChatGPT的)
+        // 格式: 邮箱----密码----clientid----rt
+        setCustomClientId(parts[2]);
+        setRefreshToken(parts[3]);
         return;
       }
     }
@@ -44,9 +42,7 @@ export default function Home() {
         body: JSON.stringify({ 
           provider, 
           email, 
-          password: password.trim() || undefined,
           refreshToken, 
-          authMode,
           customClientId: customClientId.trim() || undefined, 
           customClientSecret: customClientSecret.trim() || undefined 
         }),
@@ -84,34 +80,10 @@ export default function Home() {
             <input 
               id="smart_paste"
               className="input-field" 
-              placeholder="粘贴组合串: 邮箱----密码----辅助箱----RT" 
+              placeholder="粘贴组合串: 邮箱----密码----clientid----rt" 
               onChange={(e) => handleSmartPaste(e.target.value)}
               style={{ borderColor: 'rgba(16, 185, 129, 0.5)' }}
             />
-          </div>
-
-          {/* 认证模式选择 */}
-          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.25rem' }}>
-            {[
-              { key: 'auto', label: '🔄 自动 (Auto)' },
-              { key: 'password', label: '🔑 密码登录' },
-              { key: 'rt', label: '🎫 Refresh Token' },
-            ].map(mode => (
-              <button
-                key={mode.key}
-                type="button"
-                onClick={() => setAuthMode(mode.key as any)}
-                style={{
-                  flex: 1, padding: '0.5rem', borderRadius: '6px', cursor: 'pointer',
-                  background: authMode === mode.key ? 'rgba(139, 92, 246, 0.2)' : 'rgba(0,0,0,0.2)',
-                  border: `1px solid ${authMode === mode.key ? 'rgb(139, 92, 246)' : 'var(--border)'}`,
-                  color: authMode === mode.key ? '#fff' : '#94a3b8',
-                  transition: 'all 0.2s', fontWeight: 500, fontSize: '0.8rem'
-                }}
-              >
-                {mode.label}
-              </button>
-            ))}
           </div>
 
           <div className="provider-selector" style={{ display: 'flex', gap: '1rem', marginBottom: '0.5rem' }}>
@@ -156,34 +128,18 @@ export default function Home() {
             />
           </div>
 
-          {(authMode === 'password' || authMode === 'auto') && (
-            <div className="input-group">
-              <label className="input-label" htmlFor="pwd">密码 (Password)</label>
-              <input 
-                id="pwd"
-                type="password" 
-                className="input-field" 
-                placeholder="邮箱密码（密码登录模式时使用）" 
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </div>
-          )}
-          
-          {(authMode === 'rt' || authMode === 'auto') && (
-            <div className="input-group">
-              <label className="input-label" htmlFor="rt">刷新令牌 (Refresh Token)</label>
-              <textarea 
-                id="rt"
-                className="input-field" 
-                placeholder="在此输入您的 Refresh Token..." 
-                rows={3}
-                value={refreshToken}
-                onChange={(e) => setRefreshToken(e.target.value)}
-                style={{ resize: 'vertical' }}
-              />
-            </div>
-          )}
+          <div className="input-group">
+            <label className="input-label" htmlFor="rt">刷新令牌 (Refresh Token)</label>
+            <textarea 
+              id="rt"
+              className="input-field" 
+              placeholder="在此输入您的 Refresh Token..." 
+              rows={3}
+              value={refreshToken}
+              onChange={(e) => setRefreshToken(e.target.value)}
+              style={{ resize: 'vertical' }}
+            />
+          </div>
 
           <div style={{ background: 'rgba(255,255,255,0.02)', padding: '1rem', borderRadius: '8px', border: '1px solid var(--border)' }}>
             <div 
@@ -261,29 +217,13 @@ export default function Home() {
             <p style={{ marginBottom: '1rem', color: '#94a3b8' }}>您可以直接发送 POST 请求到当前域名的 <code style={{ background: 'rgba(0,0,0,0.3)', padding: '0.2rem 0.4rem', borderRadius: '4px' }}>/api/mail</code> 接口，实现完全自动化的邮件拉取。</p>
             
             <div style={{ marginBottom: '1rem' }}>
-              <div style={{ fontWeight: 600, color: 'var(--success)', marginBottom: '0.5rem' }}>场景 A: 使用 Refresh Token</div>
               <pre style={{ background: 'rgba(0,0,0,0.4)', padding: '1rem', borderRadius: '8px', overflow: 'auto', border: '1px solid rgba(255,255,255,0.05)' }}>
 {`curl -X POST http://YourDomain/api/mail \\
   -H "Content-Type: application/json" \\
   -d '{
     "provider": "microsoft",
     "email": "xxx@outlook.com",
-    "refreshToken": "M.C538_BL2.0...",
-    "authMode": "rt"
-  }'`}
-              </pre>
-            </div>
-
-            <div>
-              <div style={{ fontWeight: 600, color: 'var(--accent)', marginBottom: '0.5rem' }}>场景 B: 使用 密码 (IMAP直连)</div>
-              <pre style={{ background: 'rgba(0,0,0,0.4)', padding: '1rem', borderRadius: '8px', overflow: 'auto', border: '1px solid rgba(255,255,255,0.05)' }}>
-{`curl -X POST http://YourDomain/api/mail \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "provider": "microsoft",
-    "email": "xxx@outlook.com",
-    "password": "your_password",
-    "authMode": "password"
+    "refreshToken": "M.C538_BL2.0..."
   }'`}
               </pre>
             </div>

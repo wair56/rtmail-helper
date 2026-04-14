@@ -17,86 +17,15 @@ function getImapServer(email: string) {
 
 export async function POST(req: Request) {
   try {
-    const { provider, email, password, refreshToken, authMode, customClientId, customClientSecret } = await req.json();
+    const { provider, email, refreshToken, customClientId, customClientSecret } = await req.json();
 
-    if (!provider || !email) {
-      return new Response(JSON.stringify({ error: '缺少必要字段 (Missing required fields)' }), { status: 400 });
+    if (!provider || !email || !refreshToken) {
+      return new Response(JSON.stringify({ error: '缺少必要字段: email 或 refreshToken' }), { status: 400 });
     }
 
     // 自动清理前缀
     let cleanToken = (refreshToken || '').trim();
     if (cleanToken.startsWith('rt_')) cleanToken = cleanToken.substring(3);
-
-    // 决定认证方式
-    let usePassword = false;
-    if (authMode === 'password') {
-      usePassword = true;
-    } else if (authMode === 'rt') {
-      usePassword = false;
-    } else {
-      // auto: 有密码优先密码
-      usePassword = !!password;
-    }
-
-    // ===== 密码模式: 通过 IMAP 直连邮箱 =====
-    if (usePassword && password) {
-      const server = getImapServer(email);
-      
-      const client = new ImapFlow({
-        host: server.host,
-        port: server.port,
-        secure: true,
-        auth: {
-          user: email,
-          pass: password,
-        },
-        logger: false,
-      });
-
-      try {
-        await client.connect();
-        
-        const lock = await client.getMailboxLock('INBOX');
-        const formattedMails: any[] = [];
-
-        try {
-          // 获取最新 20 封邮件
-          const totalMessages = (client.mailbox as any)?.exists || 0;
-          if (totalMessages > 0) {
-            const startSeq = Math.max(1, totalMessages - 19);
-            
-            for await (const message of client.fetch(`${startSeq}:*`, {
-              envelope: true,
-            } as any)) {
-              const env = message.envelope;
-              formattedMails.push({
-                id: message.uid?.toString() || message.seq?.toString(),
-                subject: env?.subject || '(无主题 / No Subject)',
-                senderName: env?.from?.[0]?.name || '',
-                senderEmail: env?.from?.[0]?.address || '',
-                preview: env?.subject || '暂无预览',
-                date: env?.date?.toISOString() || new Date().toISOString(),
-              });
-            }
-          }
-        } finally {
-          lock.release();
-        }
-
-        await client.logout();
-
-        // 倒序排列（最新在前）
-        formattedMails.reverse();
-
-        return new Response(JSON.stringify({ success: true, data: formattedMails }), { status: 200 });
-      } catch (imapErr: any) {
-        try { await client.logout(); } catch {}
-        return new Response(JSON.stringify({ 
-          error: 'IMAP 登录失败，请检查邮箱密码是否正确 (IMAP login failed)', 
-          details: { message: imapErr.message, code: imapErr.code }
-        }), { status: 401 });
-      }
-    }
 
     // ===== RT 模式: 通过 OAuth API / IMAP XOAUTH2 =====
     if (provider === 'microsoft') {
@@ -139,7 +68,7 @@ export async function POST(req: Request) {
         try {
           const totalMessages = (client.mailbox as any)?.exists || 0;
           if (totalMessages > 0) {
-            const startSeq = Math.max(1, totalMessages - 19);
+            const startSeq = Math.max(1, totalMessages - 4);
             for await (const message of client.fetch(`${startSeq}:*`, { envelope: true } as any)) {
               const env = message.envelope;
               formattedMails.push({
@@ -185,7 +114,7 @@ export async function POST(req: Request) {
         return new Response(JSON.stringify({ error: '从谷歌获取令牌失败', details: tokenData }), { status: 401 });
       }
 
-      const listRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10', {
+      const listRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=5', {
         headers: { 'Authorization': `Bearer ${tokenData.access_token}` },
       });
       const listData = await listRes.json();
@@ -214,7 +143,7 @@ export async function POST(req: Request) {
       return new Response(JSON.stringify({ success: true, data: formattedMails }), { status: 200 });
     }
 
-    return new Response(JSON.stringify({ error: '请提供密码或有效的 Refresh Token' }), { status: 400 });
+    return new Response(JSON.stringify({ error: '不支持的 provider (Unsupported provider)' }), { status: 400 });
   } catch (error: any) {
     return new Response(JSON.stringify({ error: '服务器内部错误 (Internal Server Error)', details: error.message }), { status: 500 });
   }
