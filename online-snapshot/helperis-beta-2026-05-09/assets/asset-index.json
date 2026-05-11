@@ -1,0 +1,68 @@
+[
+  {
+    "url": "https://helperis-beta.vercel.app/_next/static/chunks/0exu0ofbk4-fd.css",
+    "file": "assets/chunks_0exu0ofbk4-fd.css",
+    "status": 200,
+    "bytes": 2907
+  },
+  {
+    "url": "https://helperis-beta.vercel.app/_next/static/chunks/15xrurgzs99gv.js",
+    "file": "assets/chunks_15xrurgzs99gv.js",
+    "status": 200,
+    "bytes": 17474
+  },
+  {
+    "url": "https://helperis-beta.vercel.app/_next/static/chunks/02i7dfk78~t~2.js",
+    "file": "assets/chunks_02i7dfk78~t~2.js",
+    "status": 200,
+    "bytes": 53149
+  },
+  {
+    "url": "https://helperis-beta.vercel.app/_next/static/chunks/0bogtdbh.dcu1.js",
+    "file": "assets/chunks_0bogtdbh.dcu1.js",
+    "status": 200,
+    "bytes": 227537
+  },
+  {
+    "url": "https://helperis-beta.vercel.app/_next/static/chunks/0fkt~r.6yx9ai.js",
+    "file": "assets/chunks_0fkt~r.6yx9ai.js",
+    "status": 200,
+    "bytes": 147086
+  },
+  {
+    "url": "https://helperis-beta.vercel.app/_next/static/chunks/turbopack-0tacfw648dizy.js",
+    "file": "assets/chunks_turbopack-0tacfw648dizy.js",
+    "status": 200,
+    "bytes": 11019
+  },
+  {
+    "url": "https://helperis-beta.vercel.app/_next/static/chunks/0dbhjjzl8qfwv.js",
+    "file": "assets/chunks_0dbhjjzl8qfwv.js",
+    "status": 200,
+    "bytes": 57909
+  },
+  {
+    "url": "https://helperis-beta.vercel.app/_next/static/chunks/0siugic90yfq..js",
+    "file": "assets/chunks_0siugic90yfq..js",
+    "status": 200,
+    "bytes": 2593
+  },
+  {
+    "url": "https://helperis-beta.vercel.app/_next/static/chunks/03~yq9q893hmn.js",
+    "file": "assets/chunks_03~yq9q893hmn.js",
+    "status": 200,
+    "bytes": 112594
+  },
+  {
+    "url": "https://helperis-beta.vercel.app/_next/static/chunks/0lc_5ko_d05bq.js",
+    "file": "assets/chunks_0lc_5ko_d05bq.js",
+    "status": 200,
+    "bytes": 3280
+  },
+  {
+    "url": "https://helperis-beta.vercel.app/_next/static/chunks/0mj~gtfah8e64.js",
+    "file": "assets/chunks_0mj~gtfah8e64.js",
+    "status": 200,
+    "bytes": 6805
+  }
+]

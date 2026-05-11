@@ -50,3 +50,8 @@ test_api.py
 test_jwt.py
 test_jwt_raw.py
 test_steven.py
+
+# sqlite runtime data
+data.db
+data.db-*
+next-*.log
