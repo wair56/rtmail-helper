@@ -6,8 +6,6 @@ import {
   orderFolderResults,
   normalizeFolder,
   normalizeFolderSet,
-  describeAvailableMailboxes,
-  isSelectableMailbox,
 } from './mail.ts';
 
 test('normalizeFolder keeps current single-folder behavior', () => {
@@ -22,23 +20,6 @@ test('normalizeFolderSet maps all to multi-folder fetch marker', () => {
   assert.deepEqual(normalizeFolderSet(null), { mode: 'single', folder: 'inbox' });
   assert.deepEqual(normalizeFolderSet('trash'), { mode: 'single', folder: 'trash' });
   assert.deepEqual(normalizeFolderSet('all'), { mode: 'all' });
-});
-
-test('describeAvailableMailboxes includes paths and special-use flags', () => {
-  const description = describeAvailableMailboxes([
-    { path: 'INBOX', specialUse: '\\Inbox' },
-    { path: 'Deleted', specialUse: '\\Trash' },
-    { path: '存档' },
-  ]);
-
-  assert.match(description, /INBOX \(\\Inbox\)/);
-  assert.match(description, /Deleted \(\\Trash\)/);
-  assert.match(description, /存档/);
-});
-
-test('isSelectableMailbox skips noselect containers and keeps real folders', () => {
-  assert.equal(isSelectableMailbox({ path: 'Archive' }), true);
-  assert.equal(isSelectableMailbox({ path: 'Parent', flags: new Set(['\\Noselect']) }), false);
 });
 
 test('getOAuthClientId ignores malformed Microsoft client ids', () => {

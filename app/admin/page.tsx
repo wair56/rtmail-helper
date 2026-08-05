@@ -152,7 +152,7 @@ export default function AdminPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
         <h1 style={{ fontSize: '1.8rem', fontWeight: 600, color: '#fff' }}>🛡️ 管理后台</h1>
         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-          <a href="https://example.com" target="_blank" rel="noopener noreferrer" style={{ color: '#94a3b8', fontSize: '0.9rem', textDecoration: 'none' }}>官方网站</a>
+          <button onClick={() => router.push('/docs')} style={{ padding: '0.5rem 1rem', background: 'rgba(108,92,231,0.15)', color: '#a78bfa', border: '1px solid rgba(108,92,231,0.25)', borderRadius: '6px', cursor: 'pointer' }}>📖 API 文档</button>
           <button onClick={handleLogout} style={{ padding: '0.5rem 1rem', background: 'rgba(239, 68, 68, 0.2)', color: '#fca5a5', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '6px', cursor: 'pointer' }}>退出</button>
         </div>
       </div>

@@ -1,5 +1,5 @@
-﻿import { ImapFlow } from 'imapflow';
-import { simpleParser } from 'mailparser';
+﻿import { simpleParser } from 'mailparser';
+import { ImapFlow } from 'imapflow';
 
 export type MailFolder = string;
 
@@ -25,13 +25,29 @@ export interface MailDetail {
   text: string;
 }
 
-const IMAP_SERVERS: Record<string, { host: string; port: number }> = {
-  'hotmail.com': { host: 'outlook.office365.com', port: 993 },
-  'outlook.com': { host: 'outlook.office365.com', port: 993 },
-  'live.com': { host: 'outlook.office365.com', port: 993 },
-  'msn.com': { host: 'outlook.office365.com', port: 993 },
-  'gmail.com': { host: 'imap.gmail.com', port: 993 },
-  'yahoo.com': { host: 'imap.mail.yahoo.com', port: 993 },
+export interface MailDetailSummary extends MailSummary {
+  html: string;
+  text: string;
+}
+
+export interface MailPageResult {
+  mails: MailDetailSummary[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+const MICROSOFT_IMAP_HOST = 'outlook.office365.com';
+const MICROSOFT_IMAP_PORT = 993;
+
+// IMAP 文件夹名候选（各客户端命名不统一，需探测）
+const FOLDER_CANDIDATES: Record<string, string[]> = {
+  inbox: ['INBOX'],
+  junk: ['Junk', 'Junk Email', 'Spam'],
+  trash: ['Deleted Items', 'Trash', 'Deleted Messages', 'Deleted', 'Bin'],
+  sent: ['Sent Items', 'Sent', 'Sent Messages'],
+  drafts: ['Drafts'],
 };
 
 const MICROSOFT_CLIENT_ID = 'dbc8e03a-b00c-46bd-ae65-b683e7707cb0';
@@ -44,11 +60,6 @@ const DETAIL_CACHE_MS = 3 * 60 * 1000;
 const tokenCache = new Map<string, { value: string; expiresAt: number }>();
 const listCache = new Map<string, { value: FolderMailResult[]; expiresAt: number }>();
 const detailCache = new Map<string, { value: MailDetail; expiresAt: number }>();
-
-const MAILBOX_NAME_CANDIDATES: Record<string, string[]> = {
-  inbox: ['INBOX'],
-  trash: ['Deleted Items', 'Trash', 'Deleted Messages', 'Deleted', 'Bin'],
-};
 
 export function normalizeFolder(input: string | null | undefined): MailFolder | null {
   if (!input) return 'inbox';
@@ -81,30 +92,6 @@ export interface FolderMailResult {
   label: string;
   mails: MailSummary[];
   error?: string;
-}
-
-type MailboxLike = {
-  path: string;
-  specialUse?: string | null;
-  flags?: Set<string> | string[] | null;
-};
-
-export function describeAvailableMailboxes(mailboxes: MailboxLike[]): string {
-  if (mailboxes.length === 0) return '无可用文件夹';
-
-  return mailboxes
-    .map((mailbox) => {
-      const specialUse = mailbox.specialUse ? ` (${mailbox.specialUse})` : '';
-      return `${mailbox.path}${specialUse}`;
-    })
-    .join(', ');
-}
-
-export function isSelectableMailbox(mailbox: MailboxLike): boolean {
-  const flags = mailbox.flags;
-  if (!flags) return true;
-  if (flags instanceof Set) return !flags.has('\\Noselect');
-  return !flags.includes('\\Noselect');
 }
 
 export function orderFolderResults(results: FolderMailResult[]): FolderMailResult[] {
@@ -163,6 +150,171 @@ export async function listMailByFolders(user: AccountRecord, folders: MailFolder
   return ordered;
 }
 
+export async function listMailPage(user: AccountRecord, folder: MailFolder, page = 1): Promise<MailPageResult> {
+  const accessToken = await getAccessToken(user);
+  const pageSize = MAX_MESSAGES;
+
+  if (user.provider === 'google') {
+    return listGoogleMailPage(accessToken, folder, page, pageSize);
+  }
+
+  return listMicrosoftMailPage(user.email, accessToken, folder, page, pageSize);
+}
+
+async function listGoogleMailPage(
+  accessToken: string,
+  folder: MailFolder,
+  page: number,
+  pageSize: number
+): Promise<MailPageResult> {
+  const params = new URLSearchParams({
+    maxResults: '100',
+  });
+  params.append('labelIds', googleLabelId(folder));
+  if (folder === 'trash' || folder === 'spam') {
+    params.set('includeSpamTrash', 'true');
+  }
+
+  const listRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const listData = await listRes.json();
+
+  if (!listRes.ok) {
+    throw new Error(listData.error?.message || '获取 Gmail 邮件列表失败');
+  }
+
+  const allMessages = Array.isArray(listData.messages) ? listData.messages : [];
+  const total = allMessages.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const clampedPage = Math.min(page, totalPages);
+  const startIdx = (clampedPage - 1) * pageSize;
+  const pageMessages = allMessages.slice(startIdx, startIdx + pageSize);
+
+  const mails = await Promise.all(
+    pageMessages.map(async (msg: { id?: string }) => {
+      if (!msg.id) return null;
+      try {
+        const detailRes = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=raw`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        const detailData = await detailRes.json();
+        if (!detailRes.ok || typeof detailData.raw !== 'string') return null;
+
+        const parsed = await simpleParser(Buffer.from(detailData.raw, 'base64url'));
+        const headers = Array.isArray(detailData.payload?.headers) ? detailData.payload.headers : [];
+        const subject = getHeaderValue(headers, 'subject') || '(无主题)';
+        const from = getHeaderValue(headers, 'from') || '';
+        const dateHeader = getHeaderValue(headers, 'date');
+        const sender = parseFromHeader(from);
+
+        return {
+          id: detailData.id as string,
+          folder,
+          subject,
+          senderName: sender.name,
+          senderEmail: sender.email,
+          preview: typeof detailData.snippet === 'string' ? detailData.snippet : '',
+          date: toIsoDate(dateHeader),
+          html: sanitizeHtml(getHtmlContent(parsed.html)),
+          text: parsed.text?.trim() || '',
+        } satisfies MailDetailSummary;
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  return {
+    mails: mails.filter((m): m is MailDetailSummary => Boolean(m)),
+    total,
+    page: clampedPage,
+    pageSize,
+    totalPages,
+  };
+}
+
+async function openMicrosoftImap(email: string, accessToken: string): Promise<ImapFlow> {
+  const client = new ImapFlow({
+    host: MICROSOFT_IMAP_HOST,
+    port: MICROSOFT_IMAP_PORT,
+    secure: true,
+    auth: { user: email, accessToken },
+    logger: false,
+    connectionTimeout: 20000,
+  });
+  await client.connect();
+  return client;
+}
+
+// 探测真实文件夹名（IMAP 各客户端命名不统一）
+async function resolveImapFolder(client: ImapFlow, folder: MailFolder): Promise<string | null> {
+  const candidates = FOLDER_CANDIDATES[folder.toLowerCase()] || [folder];
+  const list = await client.list();
+  const realNames = new Set(list.map((m: { path: string }) => m.path));
+  return candidates.find((c) => realNames.has(c)) || candidates[0] || null;
+}
+
+async function listMicrosoftMailPage(
+  email: string,
+  accessToken: string,
+  folder: MailFolder,
+  page: number,
+  pageSize: number
+): Promise<MailPageResult> {
+  const client = await openMicrosoftImap(email, accessToken);
+  try {
+    const resolved = await resolveImapFolder(client, folder);
+    if (!resolved) return { mails: [], total: 0, page, pageSize, totalPages: 1 };
+
+    const lock = await client.getMailboxLock(resolved);
+    try {
+      const mailbox = client.mailbox;
+      const total = mailbox ? mailbox.exists || 0 : 0;
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+      const clampedPage = Math.min(page, totalPages);
+      // IMAP 序号从 1 开始，最新邮件在末尾；取当前页的序号范围
+      const start = Math.max(1, total - (clampedPage * pageSize - 1));
+      const end = Math.max(1, total - ((clampedPage - 1) * pageSize));
+
+      const fetched: MailDetailSummary[] = [];
+      for await (const msg of client.fetch(`${start}:${end}`, { source: true, envelope: true })) {
+        try {
+          if (!msg.source) continue;
+          const parsed = await simpleParser(msg.source);
+          const from = parsed.from?.value?.[0];
+          fetched.push({
+            id: msg.uid.toString(),
+            folder,
+            subject: parsed.subject || '(无主题)',
+            senderName: from?.name || '',
+            senderEmail: from?.address || '',
+            preview: parsed.text?.slice(0, 150) || '',
+            date: parsed.date?.toISOString() || new Date().toISOString(),
+            html: sanitizeHtml(getHtmlContent(parsed.html)),
+            text: parsed.text?.trim() || '',
+          });
+        } catch {
+          // skip malformed messages
+        }
+      }
+
+      return {
+        mails: fetched.reverse(),
+        total,
+        page: clampedPage,
+        pageSize,
+        totalPages,
+      };
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout().catch(() => {});
+  }
+}
+
 export async function getMailDetail(user: AccountRecord, folder: MailFolder, id: string): Promise<MailDetail> {
   const cacheKey = `detail:${user.email}:${user.provider}:${folder}:${id}`;
   const cached = getCache(detailCache, cacheKey);
@@ -181,10 +333,6 @@ export async function getMailDetail(user: AccountRecord, folder: MailFolder, id:
   return detail;
 }
 
-function getImapServer(email: string) {
-  const domain = email.split('@')[1]?.toLowerCase();
-  return IMAP_SERVERS[domain ?? ''] || { host: 'outlook.office365.com', port: 993 };
-}
 
 async function getAccessToken(user: AccountRecord): Promise<string> {
   const tokenCacheKey = `token:${user.provider}:${user.email}:${getOAuthClientId(user)}:${user.rt.slice(-12)}`;
@@ -328,117 +476,25 @@ async function getGoogleMailDetail(accessToken: string, id: string): Promise<Mai
 }
 
 async function listMicrosoftMail(email: string, accessToken: string, folder: MailFolder): Promise<MailSummary[]> {
-  const client = createImapClient(email, accessToken);
-
-  try {
-    await client.connect();
-    const mailboxPath = await resolveMailboxPath(client, folder);
-    const lock = await client.getMailboxLock(mailboxPath);
-
-    try {
-      const totalMessages = client.mailbox ? client.mailbox.exists || 0 : 0;
-      if (totalMessages === 0) {
-        return [];
-      }
-
-      const startSeq = Math.max(1, totalMessages - (MAX_MESSAGES - 1));
-      const summaries: MailSummary[] = [];
-
-      for await (const message of client.fetch(`${startSeq}:*`, { envelope: true, uid: true })) {
-        const envelope = message.envelope;
-        const sender = envelope?.from?.[0];
-
-        summaries.push({
-          id: String(message.uid),
-          folder,
-          subject: envelope?.subject || '(无主题)',
-          senderName: sender?.name || '',
-          senderEmail: sender?.address || '',
-          preview: envelope?.subject || '',
-          date: envelope?.date?.toISOString() || new Date().toISOString(),
-        });
-      }
-
-      return summaries.reverse();
-    } finally {
-      lock.release();
-    }
-  } finally {
-    try {
-      await client.logout();
-    } catch {
-      // ignore logout errors
-    }
-  }
+  // 复用 IMAP 分页实现取第 1 页，去掉正文只留摘要（folder=all 模式用）
+  const result = await listMicrosoftMailPage(email, accessToken, folder, 1, MAX_MESSAGES);
+  return result.mails.map(({ html, text, ...summary }) => summary);
 }
 
 async function listAllMicrosoftMailboxes(email: string, accessToken: string): Promise<FolderMailResult[]> {
-  const client = createImapClient(email, accessToken);
+  const folders = ['inbox', 'junk', 'trash'];
+  const results: FolderMailResult[] = [];
 
-  try {
-    await client.connect();
-    const mailboxes = (await client.list()).filter(isSelectableMailbox);
-    const results: FolderMailResult[] = [];
-
-    for (const mailbox of mailboxes) {
-      try {
-        const mails = await listMicrosoftMailboxWithClient(client, mailbox.path, mailbox.path);
-        results.push({ folder: mailbox.path, label: mailboxLabel(mailbox.path, mailbox.specialUse), mails });
-      } catch (error) {
-        results.push({
-          folder: mailbox.path,
-          label: mailboxLabel(mailbox.path, mailbox.specialUse),
-          mails: [],
-          error: errorMessage(error),
-        });
-      }
-    }
-
-    return results;
-  } finally {
+  for (const folder of folders) {
     try {
-      await client.logout();
-    } catch {
-      // ignore logout errors
+      const mails = await listMicrosoftMail(email, accessToken, folder);
+      results.push({ folder, label: folderLabel(folder), mails });
+    } catch (error) {
+      results.push({ folder, label: folderLabel(folder), mails: [], error: errorMessage(error) });
     }
   }
-}
 
-async function listMicrosoftMailboxWithClient(
-  client: ImapFlow,
-  mailboxPath: string,
-  folder: MailFolder
-): Promise<MailSummary[]> {
-  const lock = await client.getMailboxLock(mailboxPath);
-
-  try {
-    const totalMessages = client.mailbox ? client.mailbox.exists || 0 : 0;
-    if (totalMessages === 0) {
-      return [];
-    }
-
-    const startSeq = Math.max(1, totalMessages - (MAX_MESSAGES - 1));
-    const summaries: MailSummary[] = [];
-
-    for await (const message of client.fetch(`${startSeq}:*`, { envelope: true, uid: true })) {
-      const envelope = message.envelope;
-      const sender = envelope?.from?.[0];
-
-      summaries.push({
-        id: String(message.uid),
-        folder,
-        subject: envelope?.subject || '(无主题)',
-        senderName: sender?.name || '',
-        senderEmail: sender?.address || '',
-        preview: envelope?.subject || '',
-        date: envelope?.date?.toISOString() || new Date().toISOString(),
-      });
-    }
-
-    return summaries.reverse();
-  } finally {
-    lock.release();
-  }
+  return results;
 }
 
 async function getMicrosoftMailDetail(
@@ -447,99 +503,29 @@ async function getMicrosoftMailDetail(
   folder: MailFolder,
   id: string
 ): Promise<MailDetail> {
-  const client = createImapClient(email, accessToken);
-
+  const client = await openMicrosoftImap(email, accessToken);
   try {
-    await client.connect();
-    const mailboxPath = await resolveMailboxPath(client, folder);
-    const lock = await client.getMailboxLock(mailboxPath);
+    const resolved = await resolveImapFolder(client, folder);
+    if (!resolved) return { html: '', text: '' };
 
+    const lock = await client.getMailboxLock(resolved);
     try {
-      const message = await client.fetchOne(id, { source: true }, { uid: true });
-      if (!message || !message.source) {
-        throw new Error('没有找到对应邮件正文');
+      // id 是 IMAP UID
+      for await (const msg of client.fetch(`${id}`, { source: true, uid: true })) {
+        if (!msg.source) continue;
+        const parsed = await simpleParser(msg.source);
+        return {
+          html: sanitizeHtml(getHtmlContent(parsed.html)),
+          text: parsed.text?.trim() || '',
+        };
       }
-
-      const parsed = await simpleParser(message.source);
-      return {
-        html: sanitizeHtml(getHtmlContent(parsed.html)),
-        text: parsed.text?.trim() || '',
-      };
+      return { html: '', text: '' };
     } finally {
       lock.release();
     }
   } finally {
-    try {
-      await client.logout();
-    } catch {
-      // ignore logout errors
-    }
+    await client.logout().catch(() => {});
   }
-}
-
-function createImapClient(email: string, accessToken: string) {
-  const server = getImapServer(email);
-
-  return new ImapFlow({
-    host: server.host,
-    port: server.port,
-    secure: true,
-    auth: {
-      user: email,
-      accessToken,
-    },
-    logger: false,
-  });
-}
-
-async function resolveMailboxPath(client: ImapFlow, folder: MailFolder): Promise<string> {
-  const mailboxes = await client.list();
-  const normalizedFolder = folder.trim().toLowerCase();
-
-  const exactPathMatch = mailboxes.find((mailbox) => mailbox.path === folder);
-  if (exactPathMatch) {
-    return exactPathMatch.path;
-  }
-
-  const specialUseMatch = mailboxes.find((mailbox) => {
-    const specialUse = String((mailbox as { specialUse?: string | null }).specialUse || '').toLowerCase();
-    if (normalizedFolder === 'inbox') {
-      return specialUse === '\\inbox' || mailbox.path.toUpperCase() === 'INBOX';
-    }
-
-    return normalizedFolder === 'trash' && specialUse === '\\trash';
-  });
-
-  if (specialUseMatch) {
-    return specialUseMatch.path;
-  }
-
-  const directNameMatch = mailboxes.find((mailbox) =>
-    (MAILBOX_NAME_CANDIDATES[normalizedFolder] || [folder]).some(
-      (candidate) => mailbox.path.localeCompare(candidate, undefined, { sensitivity: 'accent' }) === 0
-    )
-  );
-
-  if (directNameMatch) {
-    return directNameMatch.path;
-  }
-
-  const fuzzyMatch = mailboxes.find((mailbox) => {
-    const path = mailbox.path.toLowerCase();
-    if (normalizedFolder === 'inbox') {
-      return path === 'inbox';
-    }
-
-    return normalizedFolder === 'trash' && (path.includes('trash') || path.includes('deleted'));
-  });
-
-  if (fuzzyMatch) {
-    return fuzzyMatch.path;
-  }
-
-  throw new Error(
-    `${folder === 'trash' ? '没有找到垃圾箱文件夹' : `没有找到文件夹：${folder}`}。可用文件夹：${describeAvailableMailboxes(mailboxes)}`
-  );
 }
 
 function folderLabel(folder: MailFolder) {
@@ -548,16 +534,6 @@ function folderLabel(folder: MailFolder) {
   if (normalized === 'spam' || normalized === 'junk') return '垃圾邮件';
   if (normalized === 'trash') return '垃圾箱';
   return folder;
-}
-
-function mailboxLabel(path: string, specialUse?: string | null) {
-  const normalized = String(specialUse || '').toLowerCase();
-  if (normalized === '\\inbox') return '收件箱';
-  if (normalized === '\\trash') return '垃圾箱';
-  if (normalized === '\\junk') return '垃圾邮件';
-  if (normalized === '\\sent') return '已发送';
-  if (normalized === '\\drafts') return '草稿';
-  return path;
 }
 
 function googleLabelId(folder: MailFolder) {
