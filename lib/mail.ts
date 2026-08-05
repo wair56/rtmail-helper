@@ -135,17 +135,7 @@ export async function listMailByFolders(user: AccountRecord, folders: MailFolder
     return orderFolderResults(results);
   }
 
-  const results = await Promise.all(
-    target.map(async (folder) => {
-      try {
-        const mails = await listMicrosoftMail(user.email, accessToken, folder);
-        return { folder, label: folderLabel(folder), mails };
-      } catch (error) {
-        return { folder, label: folderLabel(folder), mails: [], error: errorMessage(error) };
-      }
-    })
-  );
-  const ordered = orderFolderResults(results);
+  const ordered = orderFolderResults(await listMicrosoftAllFolders(user.email, accessToken, target));
   setCache(listCache, cacheKey, ordered, LIST_CACHE_MS);
   return ordered;
 }
@@ -235,7 +225,42 @@ async function listGoogleMailPage(
   };
 }
 
+// ===== IMAP 连接池（按邮箱复用，避免微软同账号并发连接限制）=====
+// 同一邮箱：单一连接 + 互斥队列，串行使用；空闲 IMAP_POOL_TTL_MS 后关闭
+const imapPool = new Map<string, { client: ImapFlow; lastUsed: number }>();
+const imapQueue = new Map<string, Promise<unknown>>();
+const IMAP_POOL_TTL_MS = 90 * 1000;
+
+// 串行执行：同一邮箱的请求排队，保证单连接不被并发操作
+function withImapMutex<T>(email: string, fn: () => Promise<T>): Promise<T> {
+  const prev = imapQueue.get(email) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  // 吞掉错误避免队列断链，但把错误传给当前调用者
+  const guarded = run.catch(() => {});
+  imapQueue.set(email, guarded);
+  // 清理队列引用（让 GC 回收）
+  guarded.then(() => {
+    if (imapQueue.get(email) === guarded) imapQueue.delete(email);
+  });
+  return run;
+}
+
 async function openMicrosoftImap(email: string, accessToken: string): Promise<ImapFlow> {
+  // 惰性清理空闲超时的连接
+  const now = Date.now();
+  for (const [key, entry] of imapPool) {
+    if (now - entry.lastUsed > IMAP_POOL_TTL_MS) {
+      imapPool.delete(key);
+      entry.client.logout().catch(() => {});
+    }
+  }
+
+  const existing = imapPool.get(email);
+  if (existing) {
+    existing.lastUsed = Date.now();
+    return existing.client;
+  }
+
   const client = new ImapFlow({
     host: MICROSOFT_IMAP_HOST,
     port: MICROSOFT_IMAP_PORT,
@@ -244,8 +269,26 @@ async function openMicrosoftImap(email: string, accessToken: string): Promise<Im
     logger: false,
     connectionTimeout: 20000,
   });
+  // 防止连接被重置时抛 uncaughtException 导致进程崩溃
+  client.on('error', () => {});
   await client.connect();
+  imapPool.set(email, { client, lastUsed: Date.now() });
   return client;
+}
+
+// 从池中移除并关闭连接（出错时调用）
+async function invalidateMicrosoftImap(email: string) {
+  const entry = imapPool.get(email);
+  if (entry) {
+    imapPool.delete(email);
+    entry.client.logout().catch(() => {});
+  }
+}
+
+// 标记连接已使用（不需要主动关闭，池会按 TTL 回收）
+function touchMicrosoftImap(email: string) {
+  const entry = imapPool.get(email);
+  if (entry) entry.lastUsed = Date.now();
 }
 
 // 探测真实文件夹名（IMAP 各客户端命名不统一）
@@ -263,6 +306,27 @@ async function listMicrosoftMailPage(
   page: number,
   pageSize: number
 ): Promise<MailPageResult> {
+  // 同一邮箱串行执行，复用池化连接；连接失效时重试一次
+  return withImapMutex(email, async () => {
+    try {
+      return await listMicrosoftMailPageOnce(email, accessToken, folder, page, pageSize);
+    } catch (error) {
+      if (error instanceof Error && (error.message.includes('Command failed') || error.message.includes('ECONNRESET'))) {
+        await invalidateMicrosoftImap(email); // 丢弃坏连接
+        return listMicrosoftMailPageOnce(email, accessToken, folder, page, pageSize);
+      }
+      throw error;
+    }
+  });
+}
+
+async function listMicrosoftMailPageOnce(
+  email: string,
+  accessToken: string,
+  folder: MailFolder,
+  page: number,
+  pageSize: number
+): Promise<MailPageResult> {
   const client = await openMicrosoftImap(email, accessToken);
   try {
     const resolved = await resolveImapFolder(client, folder);
@@ -274,15 +338,23 @@ async function listMicrosoftMailPage(
       const total = mailbox ? mailbox.exists || 0 : 0;
       const totalPages = Math.max(1, Math.ceil(total / pageSize));
       const clampedPage = Math.min(page, totalPages);
+
+      // 空文件夹直接返回，避免 fetch 不存在的序号范围导致 IMAP 报错
+      if (total === 0) {
+        touchMicrosoftImap(email);
+        return { mails: [], total: 0, page: clampedPage, pageSize, totalPages };
+      }
+
       // IMAP 序号从 1 开始，最新邮件在末尾；取当前页的序号范围
       const start = Math.max(1, total - (clampedPage * pageSize - 1));
       const end = Math.max(1, total - ((clampedPage - 1) * pageSize));
 
       const fetched: MailDetailSummary[] = [];
-      for await (const msg of client.fetch(`${start}:${end}`, { source: true, envelope: true })) {
+      // maxLength 限制：避免拉取超大邮件（如含大量内联图片的 500KB+ 欢迎信）导致解析极慢
+      for await (const msg of client.fetch(`${start}:${end}`, { source: { maxLength: 100000 }, envelope: true })) {
         try {
           if (!msg.source) continue;
-          const parsed = await simpleParser(msg.source);
+          const parsed = await simpleParser(msg.source, { skipImageLinks: true, skipTextToHtml: true });
           const from = parsed.from?.value?.[0];
           fetched.push({
             id: msg.uid.toString(),
@@ -300,6 +372,7 @@ async function listMicrosoftMailPage(
         }
       }
 
+      touchMicrosoftImap(email);
       return {
         mails: fetched.reverse(),
         total,
@@ -310,9 +383,14 @@ async function listMicrosoftMailPage(
     } finally {
       lock.release();
     }
-  } finally {
-    await client.logout().catch(() => {});
+  } catch (error) {
+    // 连接可能失效，从池中移除
+    if (error instanceof Error && (error.message.includes('Command failed') || error.message.includes('ECONNRESET'))) {
+      await invalidateMicrosoftImap(email);
+    }
+    throw error;
   }
+  // 连接留池复用，不主动关闭（TTL 自动回收）
 }
 
 export async function getMailDetail(user: AccountRecord, folder: MailFolder, id: string): Promise<MailDetail> {
@@ -481,6 +559,78 @@ async function listMicrosoftMail(email: string, accessToken: string, folder: Mai
   return result.mails.map(({ html, text, ...summary }) => summary);
 }
 
+// 单连接串行拉多个文件夹，避免并行开多个 IMAP 连接触发微软限流（ECONNRESET）
+async function listMicrosoftAllFolders(email: string, accessToken: string, folders: MailFolder[]): Promise<FolderMailResult[]> {
+  return withImapMutex(email, async () => {
+    try {
+      return await listMicrosoftAllFoldersOnce(email, accessToken, folders);
+    } catch (error) {
+      if (error instanceof Error && (error.message.includes('Command failed') || error.message.includes('ECONNRESET'))) {
+        await invalidateMicrosoftImap(email);
+        return listMicrosoftAllFoldersOnce(email, accessToken, folders);
+      }
+      throw error;
+    }
+  });
+}
+
+async function listMicrosoftAllFoldersOnce(email: string, accessToken: string, folders: MailFolder[]): Promise<FolderMailResult[]> {
+  const client = await openMicrosoftImap(email, accessToken);
+  const results: FolderMailResult[] = [];
+  try {
+    for (const folder of folders) {
+      try {
+        const resolved = await resolveImapFolder(client, folder);
+        if (!resolved) {
+          results.push({ folder, label: folderLabel(folder), mails: [] });
+          continue;
+        }
+        const lock = await client.getMailboxLock(resolved);
+        try {
+          const mailbox = client.mailbox;
+          const total = mailbox ? mailbox.exists || 0 : 0;
+          if (total === 0) {
+            results.push({ folder, label: folderLabel(folder), mails: [] });
+            continue;
+          }
+          const start = Math.max(1, total - (MAX_MESSAGES - 1));
+          const fetched: MailSummary[] = [];
+          for await (const msg of client.fetch(`${start}:${total}`, { source: { maxLength: 100000 }, envelope: true })) {
+            try {
+              if (!msg.source) continue;
+              const parsed = await simpleParser(msg.source, { skipImageLinks: true, skipTextToHtml: true });
+              const from = parsed.from?.value?.[0];
+              fetched.push({
+                id: msg.uid.toString(),
+                folder,
+                subject: parsed.subject || '(无主题)',
+                senderName: from?.name || '',
+                senderEmail: from?.address || '',
+                preview: parsed.text?.slice(0, 150) || '',
+                date: parsed.date?.toISOString() || new Date().toISOString(),
+              });
+            } catch {
+              // skip malformed
+            }
+          }
+          results.push({ folder, label: folderLabel(folder), mails: fetched.reverse() });
+        } finally {
+          lock.release();
+        }
+      } catch (error) {
+        results.push({ folder, label: folderLabel(folder), mails: [], error: errorMessage(error) });
+      }
+    }
+    touchMicrosoftImap(email);
+  } catch (error) {
+    if (error instanceof Error && (error.message.includes('Command failed') || error.message.includes('ECONNRESET'))) {
+      await invalidateMicrosoftImap(email);
+    }
+    throw error;
+  }
+  return results;
+}
+
 async function listAllMicrosoftMailboxes(email: string, accessToken: string): Promise<FolderMailResult[]> {
   const folders = ['inbox', 'junk', 'trash'];
   const results: FolderMailResult[] = [];
@@ -503,6 +653,25 @@ async function getMicrosoftMailDetail(
   folder: MailFolder,
   id: string
 ): Promise<MailDetail> {
+  return withImapMutex(email, async () => {
+    try {
+      return await getMicrosoftMailDetailOnce(email, accessToken, folder, id);
+    } catch (error) {
+      if (error instanceof Error && (error.message.includes('Command failed') || error.message.includes('ECONNRESET'))) {
+        await invalidateMicrosoftImap(email);
+        return getMicrosoftMailDetailOnce(email, accessToken, folder, id);
+      }
+      throw error;
+    }
+  });
+}
+
+async function getMicrosoftMailDetailOnce(
+  email: string,
+  accessToken: string,
+  folder: MailFolder,
+  id: string
+): Promise<MailDetail> {
   const client = await openMicrosoftImap(email, accessToken);
   try {
     const resolved = await resolveImapFolder(client, folder);
@@ -514,17 +683,22 @@ async function getMicrosoftMailDetail(
       for await (const msg of client.fetch(`${id}`, { source: true, uid: true })) {
         if (!msg.source) continue;
         const parsed = await simpleParser(msg.source);
+        touchMicrosoftImap(email);
         return {
           html: sanitizeHtml(getHtmlContent(parsed.html)),
           text: parsed.text?.trim() || '',
         };
       }
+      touchMicrosoftImap(email);
       return { html: '', text: '' };
     } finally {
       lock.release();
     }
-  } finally {
-    await client.logout().catch(() => {});
+  } catch (error) {
+    if (error instanceof Error && (error.message.includes('Command failed') || error.message.includes('ECONNRESET'))) {
+      await invalidateMicrosoftImap(email);
+    }
+    throw error;
   }
 }
 
