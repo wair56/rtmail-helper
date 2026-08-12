@@ -844,8 +844,9 @@ async function getMicrosoftMailDetailOnce(
 
     const lock = await client.getMailboxLock(resolved);
     try {
-      // id 是 IMAP UID
-      for await (const msg of client.fetch(`${id}`, { source: true, uid: true })) {
+      // id 是 IMAP UID；必须传 { uid } 对象，imapflow 才会生成 "UID FETCH <id>"，
+      // 传裸数字会被当成序号，微软返回 "The specified message set is invalid"。
+      for await (const msg of client.fetch({ uid: id }, { source: true })) {
         if (!msg.source) continue;
         const parsed = await simpleParser(msg.source);
         touchMicrosoftImap(email);
