@@ -61,6 +61,118 @@ const tokenCache = new Map<string, { value: string; expiresAt: number }>();
 const listCache = new Map<string, { value: FolderMailResult[]; expiresAt: number }>();
 const detailCache = new Map<string, { value: MailDetail; expiresAt: number }>();
 
+// ===== IMAP 错误分类与限流冷却 =====
+// 微软对同一邮箱短时间内多次 XOAUTH2 认证会限流,返回 "User is authenticated but not connected"。
+// 识别出限流后,给该账号设冷却期:冷却期内不再发起任何 IMAP 认证,直接返回友好文案。
+export type ImapErrorKind = 'auth_throttle' | 'auth_invalid' | 'conn_reset' | 'command_failed' | 'other';
+
+const IMAP_THROTTLE_COOLDOWN_MS = 90 * 1000;
+const IMAP_ERROR_MESSAGES: Record<ImapErrorKind, string> = {
+  auth_throttle: '该账号被微软临时限流（IMAP 认证过于频繁），请等待 1-2 分钟后重试',
+  auth_invalid: '该账号的 Refresh Token 已失效，请重新导入',
+  conn_reset: 'IMAP 连接中断，请重试',
+  command_failed: '邮件操作失败，请重试',
+  other: '',
+};
+
+const throttleCooldown = new Map<string, { until: number }>();
+
+// imapflow 抛出的错误自带非标准属性,统一走 cast 读取
+type ImapErrorLike = {
+  code?: string | number;
+  response?: unknown; // 命令路径是对象,认证路径被 imapflow 压平成字符串
+  responseText?: string;
+  responseStatus?: string;
+  authenticationFailed?: boolean;
+  oauthError?: { error?: string };
+  message?: string;
+  executedCommand?: string;
+};
+
+const AUTH_THROTTLE_TEXT = 'user is authenticated but not connected';
+const AUTH_INVALID_TEXT = [
+  'invalid_grant',
+  'authenticationfailed',
+  'invalid credentials',
+  'logon failed',
+  'auth failed',
+  'oauth2 authentication failed',
+  'access denied',
+];
+const CONN_RESET_CODES = [
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ECONNABORTED',
+  'EPIPE',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ETIMEDOUT',
+  'ESOCKETTIMEDOUT',
+];
+const CONN_RESET_TEXT = [
+  'client network socket disconnected',
+  'connection timed out',
+  'socket hang up',
+  'read econnreset',
+];
+
+export function classifyImapError(error: unknown): ImapErrorKind {
+  if (!(error instanceof Error)) return 'other';
+  const e = error as unknown as ImapErrorLike;
+  const code = String(e.code ?? '');
+  const text = [e.responseText, e.response, e.message, e.executedCommand]
+    .filter((s): s is string => typeof s === 'string')
+    .join(' ')
+    .toLowerCase();
+
+  // 顺序敏感:限流文案必须先于 authenticationFailed 判断(生产限流错误也带 authenticationFailed: true)
+  if (code === 'ETHROTTLE') return 'auth_throttle';
+  if (text.includes(AUTH_THROTTLE_TEXT)) return 'auth_throttle';
+  if (e.authenticationFailed === true) return 'auth_invalid';
+  if (AUTH_INVALID_TEXT.some((t) => text.includes(t))) return 'auth_invalid';
+  if (CONN_RESET_CODES.includes(code) || CONN_RESET_TEXT.some((t) => text.includes(t))) return 'conn_reset';
+  // 其他命令级失败(如 "Command failed"),不再归为 other 导致静默失败
+  if (text.includes('command failed')) return 'command_failed';
+  return 'other';
+}
+
+// 标记账号被限流:只延长、不缩短已有冷却
+export function markImapThrottled(email: string): void {
+  const until = Date.now() + IMAP_THROTTLE_COOLDOWN_MS;
+  const existing = throttleCooldown.get(email);
+  if (!existing || existing.until < until) {
+    throttleCooldown.set(email, { until });
+  }
+}
+
+export function isImapThrottled(email: string): boolean {
+  const entry = throttleCooldown.get(email);
+  if (!entry) return false;
+  if (entry.until < Date.now()) {
+    throttleCooldown.delete(email);
+    return false;
+  }
+  return true;
+}
+
+// 仅测试用:清除冷却
+export function clearImapThrottle(email: string): void {
+  throttleCooldown.delete(email);
+}
+
+export function imapErrorMessage(kind: ImapErrorKind, error: unknown): string {
+  const friendly = IMAP_ERROR_MESSAGES[kind];
+  if (friendly) return friendly;
+  return error instanceof Error ? error.message : 'unknown_error';
+}
+
+// 冷却期内直接抛友好错误,不打 IMAP;Google 无此问题,直接 no-op
+async function assertMicrosoftNotThrottled(user: AccountRecord): Promise<void> {
+  if (user.provider === 'microsoft' && isImapThrottled(user.email)) {
+    throw new Error(IMAP_ERROR_MESSAGES.auth_throttle);
+  }
+}
+
 export function normalizeFolder(input: string | null | undefined): MailFolder | null {
   if (!input) return 'inbox';
 
@@ -104,6 +216,7 @@ export function getDefaultMailFolders(provider: string): MailFolder[] {
 
 export async function listMail(user: AccountRecord, folder: MailFolder): Promise<MailSummary[]> {
   const accessToken = await getAccessToken(user);
+  await assertMicrosoftNotThrottled(user);
 
   if (user.provider === 'google') {
     return listGoogleMail(accessToken, folder);
@@ -119,6 +232,7 @@ export async function listMailByFolders(user: AccountRecord, folders: MailFolder
   if (cached) return cached;
 
   const accessToken = await getAccessToken(user);
+  await assertMicrosoftNotThrottled(user);
 
   if (user.provider === 'google') {
     const results = await Promise.all(
@@ -142,6 +256,7 @@ export async function listMailByFolders(user: AccountRecord, folders: MailFolder
 
 export async function listMailPage(user: AccountRecord, folder: MailFolder, page = 1): Promise<MailPageResult> {
   const accessToken = await getAccessToken(user);
+  await assertMicrosoftNotThrottled(user);
   const pageSize = MAX_MESSAGES;
 
   if (user.provider === 'google') {
@@ -246,6 +361,11 @@ function withImapMutex<T>(email: string, fn: () => Promise<T>): Promise<T> {
 }
 
 async function openMicrosoftImap(email: string, accessToken: string): Promise<ImapFlow> {
+  // 冷却期内任何打开连接的尝试都直接拒绝,不再发起认证
+  if (isImapThrottled(email)) {
+    throw new Error(IMAP_ERROR_MESSAGES.auth_throttle);
+  }
+
   // 惰性清理空闲超时的连接
   const now = Date.now();
   for (const [key, entry] of imapPool) {
@@ -258,7 +378,10 @@ async function openMicrosoftImap(email: string, accessToken: string): Promise<Im
   const existing = imapPool.get(email);
   if (existing) {
     existing.lastUsed = Date.now();
-    return existing.client;
+    // 池中连接可能已半死(服务器限流后残留),复用前检查可用性
+    if (existing.client.usable) return existing.client;
+    imapPool.delete(email);
+    existing.client.logout().catch(() => {});
   }
 
   const client = new ImapFlow({
@@ -271,7 +394,15 @@ async function openMicrosoftImap(email: string, accessToken: string): Promise<Im
   });
   // 防止连接被重置时抛 uncaughtException 导致进程崩溃
   client.on('error', () => {});
-  await client.connect();
+  try {
+    await client.connect();
+  } catch (error) {
+    // 连接阶段被限流 → 标记冷却,避免后续请求再用旧 token 反复撞限流
+    if (classifyImapError(error) === 'auth_throttle') {
+      markImapThrottled(email);
+    }
+    throw error;
+  }
   imapPool.set(email, { client, lastUsed: Date.now() });
   return client;
 }
@@ -282,6 +413,50 @@ async function invalidateMicrosoftImap(email: string) {
   if (entry) {
     imapPool.delete(email);
     entry.client.logout().catch(() => {});
+  }
+}
+
+// 统一的 IMAP 重试策略(在 mutex 内执行,不与排队操作竞争):
+// - 限流:标记冷却,不重试,快速失败返回友好文案
+// - 凭证失效:不重试,快速失败
+// - 连接断开:丢弃坏连接,新连接重试 1 次;重试后仍断 → 友好文案
+// - 其他:原样抛出
+async function withImapRetry<T>(email: string, accessToken: string, fn: (attempt: number) => Promise<T>): Promise<T> {
+  try {
+    return await fn(1);
+  } catch (error) {
+    const kind = classifyImapError(error);
+    console.error('[imap] error classified as', kind, JSON.stringify(error, Object.getOwnPropertyNames(error)));
+    if (kind === 'auth_throttle') {
+      markImapThrottled(email);
+      throw new Error(imapErrorMessage('auth_throttle', error));
+    }
+    if (kind === 'auth_invalid') {
+      throw new Error(imapErrorMessage('auth_invalid', error));
+    }
+    if (kind === 'conn_reset') {
+      await invalidateMicrosoftImap(email);
+      try {
+        return await fn(2);
+      } catch (error2) {
+        const kind2 = classifyImapError(error2);
+        if (kind2 === 'auth_throttle') {
+          markImapThrottled(email);
+          throw new Error(imapErrorMessage('auth_throttle', error2));
+        }
+        if (kind2 === 'auth_invalid') {
+          throw new Error(imapErrorMessage('auth_invalid', error2));
+        }
+        await invalidateMicrosoftImap(email);
+        throw new Error(imapErrorMessage(kind2 === 'command_failed' ? 'command_failed' : 'conn_reset', error2));
+      }
+    }
+    // 命令级失败(如 "Command failed")不重试,返回友好文案而非原始英文
+    if (kind === 'command_failed') {
+      await invalidateMicrosoftImap(email);
+      throw new Error(imapErrorMessage('command_failed', error));
+    }
+    throw error;
   }
 }
 
@@ -306,18 +481,12 @@ async function listMicrosoftMailPage(
   page: number,
   pageSize: number
 ): Promise<MailPageResult> {
-  // 同一邮箱串行执行，复用池化连接；连接失效时重试一次
-  return withImapMutex(email, async () => {
-    try {
-      return await listMicrosoftMailPageOnce(email, accessToken, folder, page, pageSize);
-    } catch (error) {
-      if (error instanceof Error && (error.message.includes('Command failed') || error.message.includes('ECONNRESET'))) {
-        await invalidateMicrosoftImap(email); // 丢弃坏连接
-        return listMicrosoftMailPageOnce(email, accessToken, folder, page, pageSize);
-      }
-      throw error;
-    }
-  });
+  // 同一邮箱串行执行,复用池化连接;限流/断连等错误由 withImapRetry 统一处理
+  return withImapMutex(email, () =>
+    withImapRetry(email, accessToken, (attempt) =>
+      listMicrosoftMailPageOnce(email, accessToken, folder, page, pageSize)
+    )
+  );
 }
 
 async function listMicrosoftMailPageOnce(
@@ -384,10 +553,8 @@ async function listMicrosoftMailPageOnce(
       lock.release();
     }
   } catch (error) {
-    // 连接可能失效，从池中移除
-    if (error instanceof Error && (error.message.includes('Command failed') || error.message.includes('ECONNRESET'))) {
-      await invalidateMicrosoftImap(email);
-    }
+    // 连接可能失效,从池中移除(重试决策由 withImapRetry 统一处理)
+    await invalidateMicrosoftImap(email);
     throw error;
   }
   // 连接留池复用，不主动关闭（TTL 自动回收）
@@ -399,6 +566,7 @@ export async function getMailDetail(user: AccountRecord, folder: MailFolder, id:
   if (cached) return cached;
 
   const accessToken = await getAccessToken(user);
+  await assertMicrosoftNotThrottled(user);
   let detail: MailDetail;
 
   if (user.provider === 'google') {
@@ -455,10 +623,20 @@ async function getAccessToken(user: AccountRecord): Promise<string> {
   const tokenData = await tokenRes.json();
 
   if (!tokenRes.ok || !tokenData.access_token) {
-    throw new Error(tokenData.error_description || tokenData.error || '通过微软 RT 刷新令牌失败');
+    const detail = String(tokenData.error_description || tokenData.error || '');
+    // token 刷新阶段的 invalid_grant / expired：复用 auth_invalid 分类，返回友好中文
+    // 真实错误形如 "The user could not be authenticated as the grant is expired."
+    if (/invalid_grant|grant is expired|token expired|refresh_token/i.test(detail)) {
+      throw new Error(IMAP_ERROR_MESSAGES.auth_invalid);
+    }
+    throw new Error(detail || '通过微软 RT 刷新令牌失败');
   }
 
   setCache(tokenCache, tokenCacheKey, tokenData.access_token as string, TOKEN_CACHE_MS);
+  // 若该账号刚解除限流,缓存里的旧 token 可能是限流前获取的,清掉让下次重新换取
+  if (isImapThrottled(user.email)) {
+    tokenCache.delete(tokenCacheKey);
+  }
   return tokenData.access_token as string;
 }
 
@@ -561,17 +739,11 @@ async function listMicrosoftMail(email: string, accessToken: string, folder: Mai
 
 // 单连接串行拉多个文件夹，避免并行开多个 IMAP 连接触发微软限流（ECONNRESET）
 async function listMicrosoftAllFolders(email: string, accessToken: string, folders: MailFolder[]): Promise<FolderMailResult[]> {
-  return withImapMutex(email, async () => {
-    try {
-      return await listMicrosoftAllFoldersOnce(email, accessToken, folders);
-    } catch (error) {
-      if (error instanceof Error && (error.message.includes('Command failed') || error.message.includes('ECONNRESET'))) {
-        await invalidateMicrosoftImap(email);
-        return listMicrosoftAllFoldersOnce(email, accessToken, folders);
-      }
-      throw error;
-    }
-  });
+  return withImapMutex(email, () =>
+    withImapRetry(email, accessToken, (attempt) =>
+      listMicrosoftAllFoldersOnce(email, accessToken, folders)
+    )
+  );
 }
 
 async function listMicrosoftAllFoldersOnce(email: string, accessToken: string, folders: MailFolder[]): Promise<FolderMailResult[]> {
@@ -623,9 +795,8 @@ async function listMicrosoftAllFoldersOnce(email: string, accessToken: string, f
     }
     touchMicrosoftImap(email);
   } catch (error) {
-    if (error instanceof Error && (error.message.includes('Command failed') || error.message.includes('ECONNRESET'))) {
-      await invalidateMicrosoftImap(email);
-    }
+    // 连接可能失效,从池中移除(重试决策由 withImapRetry 统一处理)
+    await invalidateMicrosoftImap(email);
     throw error;
   }
   return results;
@@ -653,17 +824,11 @@ async function getMicrosoftMailDetail(
   folder: MailFolder,
   id: string
 ): Promise<MailDetail> {
-  return withImapMutex(email, async () => {
-    try {
-      return await getMicrosoftMailDetailOnce(email, accessToken, folder, id);
-    } catch (error) {
-      if (error instanceof Error && (error.message.includes('Command failed') || error.message.includes('ECONNRESET'))) {
-        await invalidateMicrosoftImap(email);
-        return getMicrosoftMailDetailOnce(email, accessToken, folder, id);
-      }
-      throw error;
-    }
-  });
+  return withImapMutex(email, () =>
+    withImapRetry(email, accessToken, (attempt) =>
+      getMicrosoftMailDetailOnce(email, accessToken, folder, id)
+    )
+  );
 }
 
 async function getMicrosoftMailDetailOnce(
@@ -695,9 +860,8 @@ async function getMicrosoftMailDetailOnce(
       lock.release();
     }
   } catch (error) {
-    if (error instanceof Error && (error.message.includes('Command failed') || error.message.includes('ECONNRESET'))) {
-      await invalidateMicrosoftImap(email);
-    }
+    // 连接可能失效,从池中移除(重试决策由 withImapRetry 统一处理)
+    await invalidateMicrosoftImap(email);
     throw error;
   }
 }
