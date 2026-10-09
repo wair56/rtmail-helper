@@ -125,7 +125,7 @@ test('classifyImapError detects throttle phrase inside response object only', ()
 
 test('imapErrorMessage returns friendly Chinese messages or falls back', () => {
   const err = new Error('Command failed');
-  assert.equal(imapErrorMessage('auth_throttle', err), '该账号被微软临时限流（IMAP 认证过于频繁），请等待 1-2 分钟后重试');
+  assert.equal(imapErrorMessage('auth_throttle', err), '该账号被微软临时限流（IMAP 认证过于频繁），请等待 3-5 分钟后重试');
   assert.equal(imapErrorMessage('auth_invalid', err), '该账号的 Refresh Token 已失效，请重新导入');
   assert.equal(imapErrorMessage('conn_reset', err), 'IMAP 连接中断，请重试');
   assert.equal(imapErrorMessage('command_failed', err), '邮件操作失败，请重试');

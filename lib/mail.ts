@@ -66,9 +66,10 @@ const detailCache = new Map<string, { value: MailDetail; expiresAt: number }>();
 // 识别出限流后,给该账号设冷却期:冷却期内不再发起任何 IMAP 认证,直接返回友好文案。
 export type ImapErrorKind = 'auth_throttle' | 'auth_invalid' | 'conn_reset' | 'command_failed' | 'other';
 
-const IMAP_THROTTLE_COOLDOWN_MS = 90 * 1000;
+// 延长限流冷却期:90s → 180s,给微软的限流窗口充分恢复时间
+const IMAP_THROTTLE_COOLDOWN_MS = 180 * 1000;
 const IMAP_ERROR_MESSAGES: Record<ImapErrorKind, string> = {
-  auth_throttle: '该账号被微软临时限流（IMAP 认证过于频繁），请等待 1-2 分钟后重试',
+  auth_throttle: '该账号被微软临时限流（IMAP 认证过于频繁），请等待 3-5 分钟后重试',
   auth_invalid: '该账号的 Refresh Token 已失效，请重新导入',
   conn_reset: 'IMAP 连接中断，请重试',
   command_failed: '邮件操作失败，请重试',
@@ -342,9 +343,12 @@ async function listGoogleMailPage(
 
 // ===== IMAP 连接池（按邮箱复用，避免微软同账号并发连接限制）=====
 // 同一邮箱：单一连接 + 互斥队列，串行使用；空闲 IMAP_POOL_TTL_MS 后关闭
-const imapPool = new Map<string, { client: ImapFlow; lastUsed: number }>();
+// 添加 NOOP keepalive:连接空闲 30s 后发送 NOOP 保活,避免服务器单方面断开
+const imapPool = new Map<string, { client: ImapFlow; lastUsed: number; keepaliveTimer?: NodeJS.Timeout }>();
 const imapQueue = new Map<string, Promise<unknown>>();
-const IMAP_POOL_TTL_MS = 90 * 1000;
+// 延长连接池 TTL:减少认证频率是关键,90s → 15min
+const IMAP_POOL_TTL_MS = 15 * 60 * 1000;
+const IMAP_KEEPALIVE_INTERVAL_MS = 30 * 1000;
 
 // 串行执行：同一邮箱的请求排队，保证单连接不被并发操作
 function withImapMutex<T>(email: string, fn: () => Promise<T>): Promise<T> {
@@ -371,6 +375,7 @@ async function openMicrosoftImap(email: string, accessToken: string): Promise<Im
   for (const [key, entry] of imapPool) {
     if (now - entry.lastUsed > IMAP_POOL_TTL_MS) {
       imapPool.delete(key);
+      if (entry.keepaliveTimer) clearTimeout(entry.keepaliveTimer);
       entry.client.logout().catch(() => {});
     }
   }
@@ -378,12 +383,19 @@ async function openMicrosoftImap(email: string, accessToken: string): Promise<Im
   const existing = imapPool.get(email);
   if (existing) {
     existing.lastUsed = Date.now();
+    // 停掉旧的 keepalive timer,touch 会重新设置
+    if (existing.keepaliveTimer) clearTimeout(existing.keepaliveTimer);
     // 池中连接可能已半死(服务器限流后残留),复用前检查可用性
-    if (existing.client.usable) return existing.client;
+    if (existing.client.usable) {
+      console.log(`[imap] reusing pooled connection for ${email}`);
+      return existing.client;
+    }
+    console.log(`[imap] pooled connection unusable for ${email}, creating new one`);
     imapPool.delete(email);
     existing.client.logout().catch(() => {});
   }
 
+  console.log(`[imap] opening new connection for ${email}`);
   const client = new ImapFlow({
     host: MICROSOFT_IMAP_HOST,
     port: MICROSOFT_IMAP_PORT,
@@ -412,6 +424,7 @@ async function invalidateMicrosoftImap(email: string) {
   const entry = imapPool.get(email);
   if (entry) {
     imapPool.delete(email);
+    if (entry.keepaliveTimer) clearTimeout(entry.keepaliveTimer);
     entry.client.logout().catch(() => {});
   }
 }
@@ -461,9 +474,30 @@ async function withImapRetry<T>(email: string, accessToken: string, fn: (attempt
 }
 
 // 标记连接已使用（不需要主动关闭，池会按 TTL 回收）
+// 启动 keepalive timer:连接空闲 30s 后发 NOOP,保持连接活跃
 function touchMicrosoftImap(email: string) {
   const entry = imapPool.get(email);
-  if (entry) entry.lastUsed = Date.now();
+  if (!entry) return;
+
+  entry.lastUsed = Date.now();
+
+  // 清除旧 timer,重新设置:每次 touch 后 30s 发 NOOP
+  if (entry.keepaliveTimer) clearTimeout(entry.keepaliveTimer);
+
+  entry.keepaliveTimer = setTimeout(async () => {
+    // 空闲 30s 后,如果连接还活着就发 NOOP 保活
+    const current = imapPool.get(email);
+    if (current?.client === entry.client && entry.client.usable) {
+      try {
+        await entry.client.noop();
+      } catch {
+        // NOOP 失败说明连接已死,从池中移除
+        if (imapPool.get(email) === entry) {
+          imapPool.delete(email);
+        }
+      }
+    }
+  }, IMAP_KEEPALIVE_INTERVAL_MS);
 }
 
 // 探测真实文件夹名（IMAP 各客户端命名不统一）
@@ -633,10 +667,6 @@ async function getAccessToken(user: AccountRecord): Promise<string> {
   }
 
   setCache(tokenCache, tokenCacheKey, tokenData.access_token as string, TOKEN_CACHE_MS);
-  // 若该账号刚解除限流,缓存里的旧 token 可能是限流前获取的,清掉让下次重新换取
-  if (isImapThrottled(user.email)) {
-    tokenCache.delete(tokenCacheKey);
-  }
   return tokenData.access_token as string;
 }
 
