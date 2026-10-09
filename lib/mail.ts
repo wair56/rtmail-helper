@@ -430,20 +430,63 @@ async function invalidateMicrosoftImap(email: string) {
 }
 
 // 统一的 IMAP 重试策略(在 mutex 内执行,不与排队操作竞争):
-// - 限流:标记冷却,不重试,快速失败返回友好文案
+// - 限流:延迟重试最多2次(递增延迟: 10s, 30s),失败后标记冷却
 // - 凭证失效:不重试,快速失败
 // - 连接断开:丢弃坏连接,新连接重试 1 次;重试后仍断 → 友好文案
 // - 其他:原样抛出
 async function withImapRetry<T>(email: string, accessToken: string, fn: (attempt: number) => Promise<T>): Promise<T> {
+  const MAX_THROTTLE_RETRIES = 2;
+  const THROTTLE_RETRY_DELAYS_MS = [10 * 1000, 30 * 1000]; // 第1次重试10s后，第2次重试30s后
+
   try {
     return await fn(1);
   } catch (error) {
     const kind = classifyImapError(error);
     console.error('[imap] error classified as', kind, JSON.stringify(error, Object.getOwnPropertyNames(error)));
+
     if (kind === 'auth_throttle') {
-      markImapThrottled(email);
-      throw new Error(imapErrorMessage('auth_throttle', error));
+      // 限流：尝试延迟重试
+      console.log(`[imap] throttled ${email}, will retry with backoff...`);
+
+      for (let retry = 1; retry <= MAX_THROTTLE_RETRIES; retry++) {
+        const delayMs = THROTTLE_RETRY_DELAYS_MS[retry - 1];
+        console.log(`[imap] throttle retry ${retry}/${MAX_THROTTLE_RETRIES} for ${email}, waiting ${delayMs/1000}s...`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+
+        // 每次重试前清除旧连接，强制重新认证
+        await invalidateMicrosoftImap(email);
+
+        try {
+          console.log(`[imap] attempting throttle retry ${retry} for ${email}`);
+          return await fn(retry + 1);
+        } catch (retryError) {
+          const retryKind = classifyImapError(retryError);
+          console.error(`[imap] throttle retry ${retry} failed as ${retryKind}`);
+
+          if (retryKind === 'auth_invalid') {
+            // 凭证问题，不再重试
+            throw new Error(imapErrorMessage('auth_invalid', retryError));
+          }
+
+          if (retryKind !== 'auth_throttle') {
+            // 非限流错误，按其他错误处理
+            if (retryKind === 'command_failed') {
+              await invalidateMicrosoftImap(email);
+              throw new Error(imapErrorMessage('command_failed', retryError));
+            }
+            throw retryError;
+          }
+
+          // 仍然是限流，继续下一次重试（如果还有）
+          if (retry === MAX_THROTTLE_RETRIES) {
+            // 最后一次重试也失败了，标记冷却
+            markImapThrottled(email);
+            throw new Error(imapErrorMessage('auth_throttle', retryError));
+          }
+        }
+      }
     }
+
     if (kind === 'auth_invalid') {
       throw new Error(imapErrorMessage('auth_invalid', error));
     }

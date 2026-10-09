@@ -61,7 +61,7 @@ export async function POST(req: Request) {
           const password = parts[1];
           const clientId = parts[2] || '';
           const rt = parts[3] || '';
-          
+
           let provider = 'microsoft';
           if (email.endsWith('@gmail.com')) {
             provider = 'google';
