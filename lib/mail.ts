@@ -344,7 +344,8 @@ async function listGoogleMailPage(
 // ===== IMAP 连接池（按邮箱复用，避免微软同账号并发连接限制）=====
 // 同一邮箱：单一连接 + 互斥队列，串行使用；空闲 IMAP_POOL_TTL_MS 后关闭
 // 添加 NOOP keepalive:连接空闲 30s 后发送 NOOP 保活,避免服务器单方面断开
-const imapPool = new Map<string, { client: ImapFlow; lastUsed: number; keepaliveTimer?: NodeJS.Timeout }>();
+// 存储 accessToken:验证池中连接的 token 是否和当前 token 匹配,避免 token 刷新后复用旧连接导致限流
+const imapPool = new Map<string, { client: ImapFlow; lastUsed: number; accessToken: string; keepaliveTimer?: NodeJS.Timeout }>();
 const imapQueue = new Map<string, Promise<unknown>>();
 // 延长连接池 TTL:减少认证频率是关键,90s → 15min
 const IMAP_POOL_TTL_MS = 15 * 60 * 1000;
@@ -382,17 +383,26 @@ async function openMicrosoftImap(email: string, accessToken: string): Promise<Im
 
   const existing = imapPool.get(email);
   if (existing) {
-    existing.lastUsed = Date.now();
-    // 停掉旧的 keepalive timer,touch 会重新设置
-    if (existing.keepaliveTimer) clearTimeout(existing.keepaliveTimer);
-    // 池中连接可能已半死(服务器限流后残留),复用前检查可用性
-    if (existing.client.usable) {
-      console.log(`[imap] reusing pooled connection for ${email}`);
-      return existing.client;
+    // token 不匹配 → 旧连接已过期,必须丢弃重建
+    if (existing.accessToken !== accessToken) {
+      console.log(`[imap] token mismatch for ${email}, discarding old connection`);
+      imapPool.delete(email);
+      if (existing.keepaliveTimer) clearTimeout(existing.keepaliveTimer);
+      existing.client.logout().catch(() => {});
+      // 继续下面的新建流程
+    } else {
+      existing.lastUsed = Date.now();
+      // 停掉旧的 keepalive timer,touch 会重新设置
+      if (existing.keepaliveTimer) clearTimeout(existing.keepaliveTimer);
+      // 池中连接可能已半死(服务器限流后残留),复用前检查可用性
+      if (existing.client.usable) {
+        console.log(`[imap] reusing pooled connection for ${email}`);
+        return existing.client;
+      }
+      console.log(`[imap] pooled connection unusable for ${email}, creating new one`);
+      imapPool.delete(email);
+      existing.client.logout().catch(() => {});
     }
-    console.log(`[imap] pooled connection unusable for ${email}, creating new one`);
-    imapPool.delete(email);
-    existing.client.logout().catch(() => {});
   }
 
   console.log(`[imap] opening new connection for ${email}`);
@@ -415,7 +425,7 @@ async function openMicrosoftImap(email: string, accessToken: string): Promise<Im
     }
     throw error;
   }
-  imapPool.set(email, { client, lastUsed: Date.now() });
+  imapPool.set(email, { client, lastUsed: Date.now(), accessToken });
   return client;
 }
 
